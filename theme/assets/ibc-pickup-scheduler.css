@@ -1,0 +1,222 @@
+/* Italian Bear Chocolate — cart pickup scheduler.
+   Quiet, theme-native styling: inherits Dawn typography and colour
+   custom properties, fine borders, subtle selected states. All classes
+   are namespaced with ibc-. */
+
+.ibc-pickup {
+  display: block;
+  margin-bottom: 2rem;
+}
+
+.ibc-pickup__inner {
+  border: 0.1rem solid rgba(var(--color-foreground), 0.15);
+  border-radius: var(--inputs-radius, 0.4rem);
+  padding: 1.6rem;
+  color: rgb(var(--color-foreground));
+  font-size: 1.4rem;
+  line-height: 1.5;
+}
+
+.ibc-pickup__heading {
+  margin: 0 0 0.4rem;
+  font-size: 1.6rem;
+  line-height: 1.3;
+}
+
+.ibc-pickup__copy {
+  margin: 0 0 1.2rem;
+  color: rgba(var(--color-foreground), 0.75);
+}
+
+.ibc-pickup__note {
+  margin: 1rem 0 0;
+  color: rgba(var(--color-foreground), 0.75);
+  font-size: 1.3rem;
+}
+
+.ibc-pickup__checkout-reminder {
+  margin: 1.2rem 0 0;
+  padding: 1rem 1.2rem;
+  border: 0.1rem solid rgba(var(--color-foreground), 0.12);
+  border-radius: var(--inputs-radius, 0.4rem);
+  background: rgba(var(--color-foreground), 0.03);
+  font-size: 1.3rem;
+}
+
+.ibc-pickup__status {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.ibc-pickup__status--warning {
+  color: rgba(var(--color-foreground), 0.85);
+  padding: 1rem 1.2rem;
+  border: 0.1rem solid rgba(var(--color-foreground), 0.2);
+  border-radius: var(--inputs-radius, 0.4rem);
+  margin-bottom: 1.2rem;
+}
+
+/* Text-style action links (Choose / Change / Clear) */
+.ibc-pickup__link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 1.3rem;
+  color: rgb(var(--color-foreground));
+  text-decoration: underline;
+  text-underline-offset: 0.3rem;
+  cursor: pointer;
+}
+
+.ibc-pickup__link:hover {
+  text-decoration-thickness: 0.2rem;
+}
+
+.ibc-pickup__link:focus-visible {
+  outline: 0.2rem solid rgb(var(--color-foreground));
+  outline-offset: 0.2rem;
+  border-radius: 0.2rem;
+}
+
+.ibc-pickup__actions {
+  display: flex;
+  gap: 1.6rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+/* Primary open button — mirrors Dawn's secondary button quietly */
+.ibc-pickup__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 4rem;
+  padding: 0 2rem;
+  font: inherit;
+  font-size: 1.4rem;
+  letter-spacing: 0.06rem;
+  color: rgb(var(--color-foreground));
+  background: transparent;
+  border: 0.1rem solid rgba(var(--color-foreground), 0.55);
+  border-radius: var(--buttons-radius, 0.4rem);
+  cursor: pointer;
+}
+
+.ibc-pickup__button:hover {
+  border-color: rgb(var(--color-foreground));
+}
+
+.ibc-pickup__button:focus-visible {
+  outline: 0.2rem solid rgb(var(--color-foreground));
+  outline-offset: 0.2rem;
+}
+
+.ibc-pickup__group-label {
+  display: block;
+  margin: 1.2rem 0 0.6rem;
+  font-size: 1.3rem;
+  color: rgba(var(--color-foreground), 0.75);
+}
+
+/* Date and slot options */
+.ibc-pickup__dates,
+.ibc-pickup__slots {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ibc-pickup__dates {
+  grid-template-columns: repeat(auto-fill, minmax(10.4rem, 1fr));
+}
+
+.ibc-pickup__slots {
+  grid-template-columns: repeat(auto-fill, minmax(12.8rem, 1fr));
+}
+
+.ibc-pickup__option {
+  display: block;
+  width: 100%;
+  padding: 0.7rem 0.6rem;
+  font: inherit;
+  font-size: 1.3rem;
+  text-align: center;
+  color: rgb(var(--color-foreground));
+  background: transparent;
+  border: 0.1rem solid rgba(var(--color-foreground), 0.2);
+  border-radius: var(--inputs-radius, 0.4rem);
+  cursor: pointer;
+}
+
+.ibc-pickup__option:hover {
+  border-color: rgba(var(--color-foreground), 0.6);
+}
+
+.ibc-pickup__option:focus-visible {
+  outline: 0.2rem solid rgb(var(--color-foreground));
+  outline-offset: 0.2rem;
+}
+
+.ibc-pickup__option[aria-pressed="true"],
+.ibc-pickup__option[aria-checked="true"] {
+  border-color: rgb(var(--color-foreground));
+  box-shadow: inset 0 0 0 0.1rem rgb(var(--color-foreground));
+}
+
+.ibc-pickup__option-day {
+  display: block;
+  font-size: 1.2rem;
+  color: rgba(var(--color-foreground), 0.7);
+}
+
+/* Selected confirmation */
+.ibc-pickup__selected {
+  margin: 0;
+  padding: 1rem 1.2rem;
+  border: 0.1rem solid rgb(var(--color-foreground));
+  border-radius: var(--inputs-radius, 0.4rem);
+  font-size: 1.4rem;
+}
+
+.ibc-pickup__selected strong {
+  font-weight: 600;
+}
+
+.ibc-pickup__location {
+  margin: 1rem 0 0;
+  font-size: 1.3rem;
+  color: rgba(var(--color-foreground), 0.75);
+}
+
+.ibc-pickup__error {
+  margin: 0.8rem 0 0;
+  font-size: 1.3rem;
+  color: rgb(var(--color-foreground));
+}
+
+.ibc-pickup__spinner {
+  font-size: 1.3rem;
+  color: rgba(var(--color-foreground), 0.7);
+}
+
+@media screen and (max-width: 749px) {
+  .ibc-pickup__inner {
+    padding: 1.2rem;
+  }
+
+  .ibc-pickup__dates {
+    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  }
+
+  .ibc-pickup__slots {
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  }
+
+  .ibc-pickup__actions {
+    gap: 1.2rem;
+  }
+}

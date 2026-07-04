@@ -1,0 +1,30 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+name = "Pickup Scheduler"
+handle = "pickup-scheduler-settings"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
+client_id = "97c44561f62e59f3612192b5d5c96d48"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = ""
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+[app_proxy]
+url = "https://example.com/proxy"
+prefix = "apps"
+subpath = "ibc-pickup"
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true

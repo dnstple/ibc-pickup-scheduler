@@ -1,0 +1,35 @@
+{
+  "name": "pickup-scheduler-settings",
+  "private": true,
+  "scripts": {
+    "build": "remix vite:build",
+    "dev": "shopify app dev",
+    "config:link": "shopify app config link",
+    "deploy": "shopify app deploy",
+    "setup": "prisma generate && prisma db push",
+    "vercel-build": "prisma generate && prisma db push && remix vite:build",
+    "start": "remix-serve ./build/server/index.js",
+    "test": "node --test tests/availability.test.mjs"
+  },
+  "type": "module",
+  "engines": { "node": ">=20.10" },
+  "dependencies": {
+    "@prisma/client": "^6.6.0",
+    "@remix-run/node": "^2.13.1",
+    "@remix-run/react": "^2.13.1",
+    "@remix-run/serve": "^2.13.1",
+    "@shopify/app-bridge-react": "^4.1.5",
+    "@shopify/polaris": "^13.9.0",
+    "@shopify/shopify-app-remix": "^3.4.0",
+    "@shopify/shopify-app-session-storage-prisma": "^6.0.0",
+    "@vercel/remix": "^2.13.1",
+    "isbot": "^5.1.17",
+    "prisma": "^6.6.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@remix-run/dev": "^2.13.1",
+    "vite": "^5.4.8"
+  }
+}

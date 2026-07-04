@@ -1,0 +1,48 @@
+{% comment %}
+  Italian Bear Chocolate — cart pickup (click & collect) scheduler.
+
+  Render from sections/main-cart-footer.liquid with:
+    {% render 'ibc-pickup-scheduler' %}
+
+  Pickup-only: shows no delivery options and never replaces Shopify
+  checkout's native fulfilment selection. The customer's chosen slot is
+  stored as ibc_pickup_* cart attributes via the Cart Ajax API, so the
+  data lands on the Shopify order. All availability rules are computed
+  server-side by the Pickup Scheduler Settings app via the app proxy at
+  /apps/ibc-pickup/availability — no Admin credentials or business logic
+  live in the theme.
+{% endcomment %}
+
+{{ 'ibc-pickup-scheduler.css' | asset_url | stylesheet_tag }}
+<script src="{{ 'ibc-pickup-scheduler.js' | asset_url }}" defer="defer"></script>
+
+<ibc-pickup-scheduler class="ibc-pickup" data-proxy-url="/apps/ibc-pickup/availability">
+  <script type="application/json" data-ibc-cart>
+    {
+      "total_price": {{ cart.total_price | json }},
+      "currency": {{ cart.currency.iso_code | json }},
+      "item_count": {{ cart.item_count | json }},
+      "items": [
+        {%- for item in cart.items -%}
+          {
+            "product_id": {{ item.product_id | json }},
+            "quantity": {{ item.quantity | json }},
+            "delay_minutes": {{ item.product.metafields.custom.pickup_delay_minutes.value | json }},
+            "pickup_available": {% if item.product.metafields.custom.pickup_available.value == false %}false{% else %}true{% endif %}
+          }{%- unless forloop.last -%},{%- endunless -%}
+        {%- endfor -%}
+      ],
+      "attributes": {
+        "ibc_pickup_requested": {{ cart.attributes.ibc_pickup_requested | json }},
+        "ibc_pickup_date": {{ cart.attributes.ibc_pickup_date | json }},
+        "ibc_pickup_slot_start": {{ cart.attributes.ibc_pickup_slot_start | json }},
+        "ibc_pickup_slot_end": {{ cart.attributes.ibc_pickup_slot_end | json }},
+        "ibc_pickup_slot_label": {{ cart.attributes.ibc_pickup_slot_label | json }},
+        "ibc_pickup_delay_minutes": {{ cart.attributes.ibc_pickup_delay_minutes | json }},
+        "ibc_pickup_location": {{ cart.attributes.ibc_pickup_location | json }}
+      }
+    }
+  </script>
+
+  <div class="ibc-pickup__inner" data-ibc-root hidden></div>
+</ibc-pickup-scheduler>
