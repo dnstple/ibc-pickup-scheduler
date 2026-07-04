@@ -28,29 +28,37 @@ export async function fetchPickupOrderCounts(admin, { horizonDays, timeZone }) {
   const q = `created_at:>='${since}' status:any`;
 
   const orders = [];
-  let after = null;
-  for (let page = 0; page < 4; page += 1) {
-    const response = await admin.graphql(ORDERS_QUERY, { variables: { q, after } });
-    const { data } = await response.json();
-    const conn = data?.orders;
-    if (!conn) break;
-    for (const node of conn.nodes) {
-      const attributes = {};
-      for (const a of node.customAttributes || []) attributes[a.key] = a.value;
-      if (!attributes.ibc_pickup_requested) continue;
-      const methods = (node.fulfillmentOrders?.nodes || [])
-        .map((f) => f.deliveryMethod?.methodType)
-        .filter(Boolean);
-      orders.push({
-        cancelled: Boolean(node.cancelledAt),
-        // Delivery orders must be ignored even if pickup attributes are present.
-        // If methodType is unavailable, count the order (safe, conservative).
-        isPickup: methods.length === 0 ? true : methods.includes("PICK_UP"),
-        attributes,
-      });
+  try {
+    let after = null;
+    for (let page = 0; page < 4; page += 1) {
+      const response = await admin.graphql(ORDERS_QUERY, { variables: { q, after } });
+      const { data } = await response.json();
+      const conn = data?.orders;
+      if (!conn) break;
+      for (const node of conn.nodes) {
+        const attributes = {};
+        for (const a of node.customAttributes || []) attributes[a.key] = a.value;
+        if (!attributes.ibc_pickup_requested) continue;
+        const methods = (node.fulfillmentOrders?.nodes || [])
+          .map((f) => f.deliveryMethod?.methodType)
+          .filter(Boolean);
+        orders.push({
+          cancelled: Boolean(node.cancelledAt),
+          // Delivery orders must be ignored even if pickup attributes are present.
+          // If methodType is unavailable, count the order (safe, conservative).
+          isPickup: methods.length === 0 ? true : methods.includes("PICK_UP"),
+          attributes,
+        });
+      }
+      if (!conn.pageInfo.hasNextPage) break;
+      after = conn.pageInfo.endCursor;
     }
-    if (!conn.pageInfo.hasNextPage) break;
-    after = conn.pageInfo.endCursor;
+  } catch (error) {
+    // Fail soft: if order counting is unavailable (e.g. missing scope), the
+    // scheduler still works — capacity limits just aren't enforced for this
+    // request. Logged so it shows up in the host's runtime logs.
+    console.error("[ibc-pickup] capacity counting failed:", error?.message || error);
+    return { byDate: {}, bySlot: {} };
   }
   return buildOrderCounts(orders, timeZone);
 }
