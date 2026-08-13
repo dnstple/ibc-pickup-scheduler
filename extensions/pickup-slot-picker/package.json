@@ -1,0 +1,15 @@
+{
+  "name": "pickup-slot-picker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "test": "node --test 'src/*.test.js'"
+  },
+  "dependencies": {
+    "@shopify/ui-extensions": "2026.7.x",
+    "preact": "^10.24.0",
+    "@preact/signals": "^2.0.0"
+  }
+}

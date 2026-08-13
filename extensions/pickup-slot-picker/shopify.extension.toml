@@ -1,0 +1,28 @@
+# Collection slot picker — Thank you and Order status pages.
+#
+# Replaces the cart-based date/time picker. The customer chooses their slot
+# after paying; the app writes it to the order's ibc_pickup_* note attributes,
+# so the orders dashboard needs no changes.
+
+api_version = "2026-07"
+
+[[extensions]]
+type = "ui_extension"
+name = "Collection time"
+handle = "pickup-slot-picker"
+uid = "f5c20b64-cbf7-78d2-9412-38034b409d95c35f7e40"
+
+  # Shown immediately after payment — the best moment to catch the customer.
+  [[extensions.targeting]]
+  target = "purchase.thank-you.block.render"
+  module = "./src/PickupSlot.jsx"
+
+  # The route back for anyone who closed the tab, and where a booked slot can
+  # be changed. Reminder emails should point here.
+  [[extensions.targeting]]
+  target = "customer-account.order-status.block.render"
+  module = "./src/PickupSlot.jsx"
+
+  [extensions.capabilities]
+  # Required to reach /api/pickup/* on the app's own origin.
+  network_access = true
