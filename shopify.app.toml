@@ -8,8 +8,13 @@ client_id = "97c44561f62e59f3612192b5d5c96d48"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-# write_orders added so the post-purchase picker can save the chosen collection
-# slot onto the order's note attributes. Everything else stays read-only.
+#
+# write_orders lets the post-purchase picker save the chosen collection slot onto
+# the order's note attributes. Everything else stays read-only.
+#
+# Adding a scope invalidates the existing access token until the merchant
+# re-approves, so after deploying this, open the app in Shopify admin and accept
+# the new permissions before testing.
 scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_orders"
 
 [auth]
