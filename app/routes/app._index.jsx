@@ -45,7 +45,16 @@ export const loader = async ({ request }) => {
     loadSettings(admin),
     loadProductRules(admin),
   ]);
-  const today = zonedParts(new Date(), settings.timezone || "Europe/London").dateStr;
+  /* THE SHOP'S OWN CLOCK, read on the server.
+     Both the banner and the Delivery tab's preview have to apply the daily
+     cut-off, or they promise a date the basket will not offer after noon. It
+     is read here rather than in the browser because a value computed during
+     render would differ between the server pass and the client pass and React
+     would throw a hydration mismatch. It goes stale as the page sits open,
+     which is why the preview says "right now". */
+  const nowParts = zonedParts(new Date(), settings.timezone || "Europe/London");
+  const today = nowParts.dateStr;
+  const nowMinutes = nowParts.minutesOfDay;
   return {
     settings,
     shopId,
@@ -53,8 +62,9 @@ export const loader = async ({ request }) => {
     products,
     productsTruncated: truncated,
     today,
+    nowMinutes,
     summary: summarizeSettings(settings),
-    deliverySummary: summarizeDelivery(settings.delivery, today),
+    deliverySummary: summarizeDelivery(settings.delivery, today, nowMinutes),
   };
 };
 
@@ -68,11 +78,15 @@ export const action = async ({ request }) => {
   }
   const { shopId } = await loadSettings(admin);
   await saveSettings(admin, shopId, settings);
-  const today = zonedParts(new Date(), settings.timezone || "Europe/London").dateStr;
+  const nowParts = zonedParts(new Date(), settings.timezone || "Europe/London");
   return Response.json({
     ok: true,
     summary: summarizeSettings(settings),
-    deliverySummary: summarizeDelivery(settings.delivery, today),
+    deliverySummary: summarizeDelivery(
+      settings.delivery,
+      nowParts.dateStr,
+      nowParts.minutesOfDay
+    ),
   });
 };
 
@@ -322,6 +336,7 @@ export default function FulfilmentSettingsPage() {
             delivery={settings.delivery}
             errors={errors}
             today={data.today}
+            nowMinutes={data.nowMinutes}
             updateDelivery={updateDelivery}
             updateDeliveryBlackout={updateDeliveryBlackout}
             addDeliveryBlackout={addDeliveryBlackout}
@@ -377,6 +392,7 @@ function DeliveryTab({
   delivery,
   errors,
   today,
+  nowMinutes,
   updateDelivery,
   updateDeliveryBlackout,
   addDeliveryBlackout,
@@ -392,18 +408,29 @@ function DeliveryTab({
     updateDelivery({ closed_weekdays: [...next].sort((a, b) => a - b) });
   };
 
-  // Preview the earliest date these rules would offer right now. Computed from
-  // the same function the summary uses, so what is shown is what customers get.
-  let earliestText = null;
+  /* THE EARLIEST DATE THESE RULES WOULD OFFER RIGHT NOW, from the same
+     function the basket's rule mirrors, so what is shown is what a customer
+     gets. nowMinutes is included because the cut-off is a time-of-day rule —
+     without it the preview promised a date that stopped being available at
+     noon. */
+  let earliest = null;
   if (d.enabled && d.dated_enabled && today) {
     try {
       const iso = earliestDeliveryDate(
         { ...d, closed_weekdays: [...closed] },
-        today
+        today,
+        typeof nowMinutes === "number" ? nowMinutes : null
       );
-      earliestText = `${dateLabel(iso).label} (${iso})`;
+      /* The un-rolled landing day too, so the sentence can show its working
+         when the two differ — that is the step people expect to be wrong. */
+      const landed = earliestDeliveryDate(
+        { ...d, closed_weekdays: [], blackout_dates: [] },
+        today,
+        typeof nowMinutes === "number" ? nowMinutes : null
+      );
+      earliest = { iso, label: dateLabel(iso).label, landed, rolled: landed !== iso };
     } catch {
-      earliestText = null;
+      earliest = null;
     }
   }
 
@@ -463,7 +490,7 @@ function DeliveryTab({
               </Text>
               <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
                 <TextField
-                  label="Lead time (working days)"
+                  label="Lead time (days)"
                   type="number"
                   min={0}
                   max={30}
@@ -471,7 +498,7 @@ function DeliveryTab({
                   onChange={(v) => updateDelivery({ lead_days: v === "" ? "" : Number(v) })}
                   error={errors["delivery.lead_days"]}
                   disabled={d.enabled === false}
-                  helpText="How long you need to make the order and get it to the courier. 2 means a Thursday order is offered Saturday at the earliest, counting only the days ticked below. 0 would offer tomorrow."
+                  helpText="How many days you need to make the order and get it to the courier. Plain calendar days — a day the courier is shut does not make the baking take longer. If the date it lands on is not a delivery day, it moves to the next one that is."
                   autoComplete="off"
                 />
                 <TextField
@@ -488,15 +515,24 @@ function DeliveryTab({
                 />
               </InlineGrid>
 
-              {earliestText && (
+              {earliest && (
                 <Banner tone="success">
-                  <Text as="p">
-                    With these rules, the earliest date a customer can choose today is{" "}
-                    <Text as="span" fontWeight="semibold">
-                      {earliestText}
+                  <BlockStack gap="200">
+                    <Text as="p">
+                      Right now, the earliest date a customer can choose is{" "}
+                      <Text as="span" fontWeight="semibold">
+                        {earliest.label}
+                      </Text>
+                      .
                     </Text>
-                    .
-                  </Text>
+                    {earliest.rolled && (
+                      <Text as="p">
+                        {d.lead_days} {Number(d.lead_days) === 1 ? "day" : "days"} from
+                        now is {dateLabel(earliest.landed).label}, which is not a day
+                        couriers deliver, so it moves to the next one that is.
+                      </Text>
+                    )}
+                  </BlockStack>
                 </Banner>
               )}
 
@@ -507,10 +543,11 @@ function DeliveryTab({
                   Days couriers deliver
                 </Text>
                 <Text as="p" tone="subdued">
-                  An unticked day does two things: it is greyed out in the calendar, and
-                  it stops counting towards the lead time above. So if you untick
-                  Saturday, a Thursday order at 2 days&rsquo; lead moves from Saturday to
-                  Monday on its own &mdash; you do not also need to raise the lead time.
+                  An unticked day is greyed out in the calendar. It does{" "}
+                  <Text as="span" fontWeight="semibold">not</Text> add to the lead time
+                  above &mdash; that is your own preparation time and runs regardless.
+                  When the lead lands on an unticked day, the date simply moves forward
+                  to the next ticked one.
                 </Text>
                 <InlineStack gap="400" wrap>
                   {WEEKDAY_INDEX_LABELS.map((label, index) => (
@@ -541,7 +578,7 @@ function DeliveryTab({
                   that day&rsquo;s courier collection.
                 </Text>
                 <Checkbox
-                  label="Stop counting today as a working day after a set time"
+                  label="Stop counting today after a set time"
                   checked={Boolean(d.cutoff_enabled)}
                   onChange={(v) => updateDelivery({ cutoff_enabled: v })}
                   disabled={d.enabled === false}
@@ -553,7 +590,7 @@ function DeliveryTab({
                   onChange={(v) => updateDelivery({ cutoff_time: v })}
                   disabled={d.enabled === false || !d.cutoff_enabled}
                   error={errors["delivery.cutoff_time"]}
-                  helpText="With a 14:00 cut-off and 2 days' lead: order at 13:00 Thursday and Saturday is offered; order at 15:00 Thursday and it starts counting from Friday, so Monday is the earliest."
+                  helpText="An order after this time starts its lead time tomorrow instead of today, so it is offered one day later. Leave it off if you can still get an evening order out the next morning."
                   autoComplete="off"
                 />
               </BlockStack>

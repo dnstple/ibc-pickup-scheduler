@@ -7,7 +7,7 @@
 //
 // Pure — no I/O, fully unit-testable.
 
-import { timeToMinutes, addDays } from "./timezone.js";
+import { timeToMinutes, addDays, dateLabel } from "./timezone.js";
 
 // Sunday is 0 through Saturday is 6, matching JavaScript's getDay() and the
 // theme's data-delivery-closed-days attribute. Do not renumber this: the
@@ -22,7 +22,8 @@ export const DEFAULT_DELIVERY = {
   standard_enabled: true,
   // The "choose a delivery date" calendar.
   dated_enabled: true,
-  // Working days between ordering and the earliest date the calendar offers.
+  // CALENDAR days between ordering and the earliest date the calendar offers.
+  // Not "working days": see earliestDeliveryDate for why.
   lead_days: 2,
   // How far ahead the delivery calendar runs, in calendar days.
   horizon_days: 60,
@@ -80,7 +81,7 @@ export function validateDelivery(d) {
 
   const lead = Number(d.lead_days);
   if (!Number.isInteger(lead) || lead < 0 || lead > 30) {
-    errors["delivery.lead_days"] = "Enter a whole number of working days between 0 and 30.";
+    errors["delivery.lead_days"] = "Enter a whole number of days between 0 and 30.";
   }
 
   const horizon = Number(d.horizon_days);
@@ -136,9 +137,29 @@ function hasAnyOpenDay(d) {
 /**
  * The earliest delivery date the calendar should offer.
  *
- * Counts lead_days forward, skipping closed weekdays, then skips blackout
- * dates. Mirrors addWorkingDays() in assets/ibc-fulfilment.js — if you change
- * one, change both, or the basket and the admin preview will disagree.
+ * TWO STEPS, IN THIS ORDER, AND THEY ARE DIFFERENT QUESTIONS.
+ *
+ *   1. LEAD TIME IS CALENDAR DAYS. It is how long the shop needs to make the
+ *      order and get it to the courier, and that is time on a clock — the
+ *      courier being shut on Monday does not make a cake take longer to bake.
+ *      So the count does not skip closed days.
+ *
+ *   2. THEN ROLL FORWARD TO A DAY THE COURIER ACTUALLY DELIVERS, stepping over
+ *      closed weekdays and blocked dates.
+ *
+ * Worked through on a Saturday the 12th, lead 2, couriers closed Sunday and
+ * Monday: 12 + 2 = the 14th, which is a Monday, so it rolls to Tuesday the
+ * 15th. Ship on the Monday, arrive on the Tuesday.
+ *
+ * IT USED TO COUNT THE LEAD IN DELIVERING DAYS, which gave Wednesday the 16th
+ * on that same Saturday — a day later than the shop can actually do it, because
+ * the closed Sunday and Monday were charged twice: once by not counting towards
+ * the lead, and again by not being deliverable. One closed day should cost one
+ * day, not two.
+ *
+ * Mirrored by minDate() plus dayState() in assets/ibc-fulfilment.js: that pair
+ * does step 1 as a plain day count and lets the calendar's own closed-day
+ * shading do step 2. If you change this, change those.
  *
  * @param {object} d        normalized delivery settings
  * @param {string} todayStr "YYYY-MM-DD" in the shop's timezone
@@ -149,21 +170,19 @@ export function earliestDeliveryDate(d, todayStr, nowMinutes = null) {
   const blacked = new Set(d.blackout_dates.map((b) => b.date));
 
   let cursor = todayStr;
-  let remaining = Number(d.lead_days) || 0;
 
-  // Past the cut-off, today does not count towards the lead time.
+  // Past the cut-off, today is gone: the lead time starts counting tomorrow.
   if (d.cutoff_enabled && nowMinutes !== null) {
     const cutoff = timeToMinutes(d.cutoff_time);
     if (cutoff !== null && nowMinutes >= cutoff) cursor = addDays(cursor, 1);
   }
 
+  // Step 1: the shop's own time, in plain days.
+  const lead = Number(d.lead_days);
+  cursor = addDays(cursor, Number.isFinite(lead) && lead > 0 ? Math.floor(lead) : 0);
+
+  // Step 2: the first day from there that a courier will actually deliver on.
   let guard = 0;
-  while (remaining > 0 && guard < 400) {
-    cursor = addDays(cursor, 1);
-    guard += 1;
-    if (!closed.has(weekdayIndex(cursor))) remaining -= 1;
-  }
-  // The landing day itself must also be one the courier delivers on.
   while ((closed.has(weekdayIndex(cursor)) || blacked.has(cursor)) && guard < 400) {
     cursor = addDays(cursor, 1);
     guard += 1;
@@ -177,7 +196,7 @@ export function weekdayIndex(dateStr) {
   return new Date(Date.UTC(y, m - 1, day, 12, 0, 0)).getUTCDay();
 }
 
-export function summarizeDelivery(rawDelivery, todayStr = null) {
+export function summarizeDelivery(rawDelivery, todayStr = null, nowMinutes = null) {
   const d = normalizeDelivery(rawDelivery);
   if (!d.enabled) return "Delivery is switched off. Only collection is offered.";
 
@@ -191,12 +210,12 @@ export function summarizeDelivery(rawDelivery, todayStr = null) {
       .map((i) => WEEKDAY_INDEX_LABELS[i])
       .filter(Boolean);
     const lead = Number(d.lead_days);
-    text +=
-      ` The earliest date offered is ${lead} working ${lead === 1 ? "day" : "days"} ahead`;
+    text += ` It needs ${lead} ${lead === 1 ? "day" : "days"} to get an order out`;
     if (todayStr) {
-      text += ` (${earliestDeliveryDate(d, todayStr)})`;
+      const iso = earliestDeliveryDate(d, todayStr, nowMinutes);
+      text += `, so the earliest date on offer right now is ${dateLabel(iso).label}`;
     }
-    text += `, running ${d.horizon_days} days out.`;
+    text += `. The calendar runs ${d.horizon_days} days out.`;
     if (closedNames.length > 0) {
       text += ` No deliveries on ${closedNames.join(", ")}.`;
     }
@@ -207,7 +226,7 @@ export function summarizeDelivery(rawDelivery, todayStr = null) {
     }
   }
   if (d.cutoff_enabled) {
-    text += ` Orders after ${d.cutoff_time} count from the next day.`;
+    text += ` Orders after ${d.cutoff_time} start counting from the next day.`;
   }
   return text;
 }

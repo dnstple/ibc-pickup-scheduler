@@ -110,18 +110,52 @@ test("blackout dates must be real dates", () => {
   assert.equal(e["delivery.blackout_dates.1.date"], undefined);
 });
 
-test("earliest date counts working days, skipping closed weekdays", () => {
-  const d = normalizeDelivery({ lead_days: 2, closed_weekdays: [0] });
-  // Thursday 2026-09-17 + 2 working days (Fri, Sat) = Saturday 19th.
-  assert.equal(earliestDeliveryDate(d, "2026-09-17"), "2026-09-19");
-  // Friday 18th + 2 = Sat 19th, Mon 21st (Sunday does not count).
-  assert.equal(earliestDeliveryDate(d, "2026-09-18"), "2026-09-21");
+/* THE CASE THIS RULE WAS REWRITTEN FOR, kept first and named after the real
+   conversation it came out of.
+
+   Saturday the 12th. Couriers do not deliver Sunday or Monday. Two days to
+   make and dispatch. The shop can bake on Sunday and Monday, hand it over on
+   the Monday, and the customer gets it on the Tuesday — so Tuesday the 15th
+   is the honest earliest date.
+
+   The old rule counted the lead in DELIVERING days and answered Wednesday the
+   16th, charging the closed Sunday and Monday twice: once for not counting,
+   and again for not being landable. */
+test("Saturday, couriers shut Sunday and Monday, two days' lead: Tuesday", () => {
+  const d = normalizeDelivery({ lead_days: 2, closed_weekdays: [0, 1] });
+  assert.equal(earliestDeliveryDate(d, "2026-09-12"), "2026-09-15");
 });
 
-test("earliest date skips weekends when both are closed", () => {
+test("and the same with the cut-off already passed, which cannot make it sooner", () => {
+  const d = normalizeDelivery({
+    lead_days: 2,
+    closed_weekdays: [0, 1],
+    cutoff_enabled: true,
+    cutoff_time: "12:00",
+  });
+  // 12 -> 13 for the cut-off, + 2 = the 15th, a Tuesday, which is open.
+  assert.equal(earliestDeliveryDate(d, "2026-09-12", 16 * 60), "2026-09-15");
+  // Before noon: 12 + 2 = the 14th, a Monday, rolled to the 15th. Same answer,
+  // because the closed Monday absorbs the difference.
+  assert.equal(earliestDeliveryDate(d, "2026-09-12", 10 * 60), "2026-09-15");
+});
+
+test("the lead is calendar days, so a closed day does not lengthen it", () => {
+  const d = normalizeDelivery({ lead_days: 2, closed_weekdays: [0] });
+  // Thursday 17th + 2 = Saturday 19th, which is a delivering day.
+  assert.equal(earliestDeliveryDate(d, "2026-09-17"), "2026-09-19");
+  // Friday 18th + 2 = Sunday 20th, closed, so Monday 21st.
+  assert.equal(earliestDeliveryDate(d, "2026-09-18"), "2026-09-21");
+  // Saturday 19th + 2 = Monday 21st, open.
+  assert.equal(earliestDeliveryDate(d, "2026-09-19"), "2026-09-21");
+});
+
+test("closing both weekend days moves the landing day, not the count", () => {
   const d = normalizeDelivery({ lead_days: 2, closed_weekdays: [0, 6] });
-  // Thursday 17th + Fri, Mon = Monday 21st.
+  // Thursday 17th + 2 = Saturday 19th, closed, Sunday closed, so Monday 21st.
   assert.equal(earliestDeliveryDate(d, "2026-09-17"), "2026-09-21");
+  // Tuesday 15th + 2 = Thursday 17th, open. Untouched by the weekend.
+  assert.equal(earliestDeliveryDate(d, "2026-09-15"), "2026-09-17");
 });
 
 test("earliest date never lands on a closed weekday", () => {
@@ -130,24 +164,34 @@ test("earliest date never lands on a closed weekday", () => {
   assert.equal(earliestDeliveryDate(d, "2026-09-13"), "2026-09-14");
 });
 
+test("a lead of 0 offers today when today is deliverable", () => {
+  const d = normalizeDelivery({ lead_days: 0, closed_weekdays: [0] });
+  assert.equal(earliestDeliveryDate(d, "2026-09-15"), "2026-09-15");
+});
+
 test("earliest date steps over a blackout date", () => {
   const d = normalizeDelivery({
     lead_days: 2,
     closed_weekdays: [0],
     blackout_dates: [{ date: "2026-09-19", note: "no courier" }],
   });
-  // Would have been Sat 19th; 19th is blocked, 20th is Sunday, so Monday 21st.
+  // 17 + 2 = the 19th, blocked; the 20th is a Sunday; so Monday the 21st.
   assert.equal(earliestDeliveryDate(d, "2026-09-17"), "2026-09-21");
 });
 
-test("the cut-off pushes the count to tomorrow, and only when enabled", () => {
+test("the cut-off pushes the start to tomorrow, and only when enabled", () => {
   const on = normalizeDelivery({ lead_days: 1, cutoff_enabled: true, cutoff_time: "14:00" });
-  // Thursday 17th, 13:00 -> counts from today -> Friday 18th.
+  // Thursday 17th, 13:00 -> starts today -> Friday 18th.
   assert.equal(earliestDeliveryDate(on, "2026-09-17", 13 * 60), "2026-09-18");
-  // 15:00 -> counts from tomorrow -> Saturday 19th.
+  // 15:00 -> starts tomorrow -> Saturday 19th.
   assert.equal(earliestDeliveryDate(on, "2026-09-17", 15 * 60), "2026-09-19");
   const off = normalizeDelivery({ lead_days: 1, cutoff_enabled: false, cutoff_time: "14:00" });
   assert.equal(earliestDeliveryDate(off, "2026-09-17", 15 * 60), "2026-09-18");
+});
+
+test("a cut-off with no clock passed in is ignored rather than guessed", () => {
+  const d = normalizeDelivery({ lead_days: 1, cutoff_enabled: true, cutoff_time: "00:01" });
+  assert.equal(earliestDeliveryDate(d, "2026-09-17"), "2026-09-18");
 });
 
 test("the earliest-date walk always terminates", () => {
@@ -156,12 +200,18 @@ test("the earliest-date walk always terminates", () => {
   assert.match(got, /^\d{4}-\d{2}-\d{2}$/);
 });
 
-test("summary reads as a sentence and names the closed days", () => {
+test("summary reads as a sentence, names the date and the closed days", () => {
   const text = summarizeDelivery({ lead_days: 2, closed_weekdays: [0, 6] }, "2026-09-17");
   assert.match(text, /standard shipping and a chosen delivery date/);
-  assert.match(text, /2 working days ahead/);
-  assert.match(text, /2026-09-21/);
+  assert.match(text, /needs 2 days to get an order out/);
+  assert.match(text, /Monday 21 September/);
   assert.match(text, /No deliveries on Sunday, Saturday/);
+});
+
+test("the summary applies the cut-off when given the time", () => {
+  const rules = { lead_days: 1, closed_weekdays: [], cutoff_enabled: true, cutoff_time: "12:00" };
+  assert.match(summarizeDelivery(rules, "2026-09-17", 10 * 60), /Friday 18 September/);
+  assert.match(summarizeDelivery(rules, "2026-09-17", 14 * 60), /Saturday 19 September/);
 });
 
 test("summary says so plainly when delivery is off", () => {
