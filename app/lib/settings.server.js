@@ -78,6 +78,7 @@ const PRODUCTS_QUERY = `
         status
         delay: metafield(namespace: "custom", key: "pickup_delay_minutes") { value }
         available: metafield(namespace: "custom", key: "pickup_available") { value }
+        pickupOnly: metafield(namespace: "custom", key: "pickup_only") { value }
       }
     }
   }
@@ -100,6 +101,9 @@ export async function loadProductRules(admin, maxPages = 3) {
         status: node.status,
         delayMinutes: node.delay?.value != null ? Number(node.delay.value) : null,
         pickupAvailable: node.available?.value == null ? true : node.available.value === "true",
+        // pickup_only was being managed on products and shown nowhere. A rule
+        // set on the wrong product is invisible until a customer hits it.
+        pickupOnly: node.pickupOnly?.value === "true",
       });
     }
     if (!conn.pageInfo.hasNextPage) break;

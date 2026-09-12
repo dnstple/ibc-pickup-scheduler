@@ -10,6 +10,11 @@ import {
   minutesToLabel,
   dateLabel,
 } from "./timezone.js";
+import {
+  DEFAULT_DELIVERY,
+  normalizeDelivery,
+  validateDelivery,
+} from "./delivery.js";
 
 export const DEFAULT_PREP_MINUTES = 60; // fixed in v1 — deliberately not a setting
 export const WEEKDAY_KEYS = [
@@ -18,6 +23,9 @@ export const WEEKDAY_KEYS = [
 
 export const DEFAULT_SETTINGS = {
   timezone: "Europe/London",
+  // Master switch for click-and-collect. When false the basket hides the
+  // collection tile entirely and every rule below stops mattering.
+  pickup_enabled: true,
   booking_horizon_days: 14,
   slot_interval_minutes: 30,
   same_day_pickup_enabled: true,
@@ -36,6 +44,8 @@ export const DEFAULT_SETTINGS = {
   ),
   blackout_dates: [], // [{ date, all_day, start_time, end_time, note }]
   capacity_overrides: [], // [{ date, slot_start (HH:MM or null = whole day), max_orders, note }]
+  // The delivery half of fulfilment. See lib/delivery.js.
+  delivery: DEFAULT_DELIVERY,
 };
 
 // Merge stored JSON with defaults so missing keys never break the engine.
@@ -50,11 +60,29 @@ export function normalizeSettings(raw) {
   }
   s.blackout_dates = Array.isArray(s.blackout_dates) ? s.blackout_dates : [];
   s.capacity_overrides = Array.isArray(s.capacity_overrides) ? s.capacity_overrides : [];
+  s.pickup_enabled = s.pickup_enabled !== false; // absent means on, for settings saved before this key existed
+  s.delivery = normalizeDelivery(s.delivery);
   return s;
 }
 
-// Validate settings before saving. Returns { fieldPath: message } — empty when valid.
+// Validate everything before saving. Returns { fieldPath: message } — empty when
+// valid. Pickup and delivery are checked separately so that switching one off
+// cannot be blocked by the other one's rules.
 export function validateSettings(s) {
+  const errors = {};
+  if (!s.pickup_enabled && !s.delivery?.enabled) {
+    errors.pickup_enabled =
+      "Turn on collection or delivery. With both off, nobody can check out.";
+  }
+  if (s.pickup_enabled) {
+    Object.assign(errors, validatePickupSettings(s));
+  }
+  Object.assign(errors, validateDelivery(normalizeDelivery(s.delivery)));
+  return errors;
+}
+
+// The collection half. Only reached when pickup is switched on.
+export function validatePickupSettings(s) {
   const errors = {};
   const horizon = Number(s.booking_horizon_days);
   if (!Number.isInteger(horizon) || horizon < 1 || horizon > 90) {

@@ -123,6 +123,22 @@ export async function loadAvailability({
 
 /* ------------------------------------------------------------------ shaping */
 
+/**
+ * The slot matching an ISO start, across every date. Returns the slot with its
+ * date attached, or null. Used to show "you're booking …" before the customer
+ * commits, so two dropdowns don't leave them guessing what they picked.
+ */
+export function findSlot(availability, startIso) {
+  const wanted = String(startIso ?? '').trim();
+  if (!wanted) return null;
+  for (const date of availability?.dates || []) {
+    for (const slot of date.slots || []) {
+      if (slot.start_iso === wanted) return { ...slot, date: date.date };
+    }
+  }
+  return null;
+}
+
 /** Slots for one date key, or an empty array. */
 export function slotsForDate(availability, dateKey) {
   const entry = (availability?.dates || []).find((d) => d.date === dateKey);

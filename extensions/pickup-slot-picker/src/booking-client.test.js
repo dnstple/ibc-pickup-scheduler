@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
+
+import * as client from './booking-client.js';
 
 import {
   resolveOrderId,
@@ -9,6 +12,7 @@ import {
   bookSlot,
   slotsForDate,
   initialSelection,
+  findSlot,
   ineligibleMessage,
   RETRY_DELAYS_MS
 } from './booking-client.js';
@@ -49,6 +53,27 @@ function fakeFetch(responses) {
   impl.calls = calls;
   return impl;
 }
+
+/* The component and the client are separate files, so a rename or a forgotten
+ * export only shows up when the CLI bundles — a deploy cycle away. This reads
+ * the component's import list and asserts every name actually exists. */
+describe('component imports', () => {
+  it('every name PickupSlot.jsx imports is exported by booking-client.js', () => {
+    const source = readFileSync(new URL('./PickupSlot.jsx', import.meta.url), 'utf8');
+    const block = /import\s*\{([^}]+)\}\s*from\s*['"]\.\/booking-client\.js['"]/.exec(source);
+    assert.ok(block, 'could not find the booking-client import in PickupSlot.jsx');
+
+    const imported = block[1]
+      .split(',')
+      .map((name) => name.trim().split(/\s+as\s+/)[0].trim())
+      .filter(Boolean);
+
+    assert.ok(imported.length > 0, 'parsed no imports');
+
+    const missing = imported.filter((name) => !(name in client));
+    assert.deepStrictEqual(missing, [], `not exported: ${missing.join(', ')}`);
+  });
+});
 
 describe('resolveOrderId', () => {
   it('reads the Thank you page path', () => {
@@ -230,6 +255,25 @@ describe('slotsForDate', () => {
   it('returns an empty array for an unknown date', () => {
     assert.deepStrictEqual(slotsForDate(AVAILABILITY, '2026-01-01'), []);
     assert.deepStrictEqual(slotsForDate(null, '2026-08-14'), []);
+  });
+});
+
+describe('findSlot', () => {
+  it('finds a slot and attaches its date', () => {
+    const found = findSlot(AVAILABILITY, '2026-08-15T10:00:00+01:00');
+    assert.strictEqual(found.date, '2026-08-15');
+    assert.strictEqual(found.time_label, '10:00–10:30am');
+  });
+
+  it('returns null for a slot that is not offered', () => {
+    assert.strictEqual(findSlot(AVAILABILITY, '2026-08-14T03:00:00+01:00'), null);
+  });
+
+  it('returns null for empty, missing or malformed input', () => {
+    assert.strictEqual(findSlot(AVAILABILITY, ''), null);
+    assert.strictEqual(findSlot(AVAILABILITY, null), null);
+    assert.strictEqual(findSlot(null, '2026-08-14T14:00:00+01:00'), null);
+    assert.strictEqual(findSlot({ dates: [] }, 'x'), null);
   });
 });
 
