@@ -27,19 +27,30 @@ import {
   Text,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
-import { gophrStatus, quote, parcelFor, GophrError } from "../lib/gophr.server";
+import {
+  gophrStatus,
+  quote,
+  parcelFor,
+  buildQuoteBody,
+  GophrError,
+} from "../lib/gophr.server";
+
+// Bumped whenever the request shape changes. Shown on the page so "is the new
+// code actually running?" is answered by looking, not by inferring from the
+// error message.
+const SHAPE_VERSION = "v2 — flat prefixed fields, parcels on both ends";
 import { ZONES, TEST_ZONE, zoneForPostcode, shopifyPostcodeList } from "../lib/zones";
 
 // The six journeys from the scope. Three are deliberately Friday evening,
 // because that is where a flat rate is lost — a Tuesday-morning average will
 // flatter the numbers and set the price too low.
 const TEST_JOURNEYS = [
-  { label: "Mayfair", postcode: "W1K 3JA", address_line_1: "1 Grosvenor Square", when: "Tuesday 11:00" },
-  { label: "Covent Garden", postcode: "WC2E 9DD", address_line_1: "Bow Street", when: "Friday 17:00" },
-  { label: "Shoreditch", postcode: "EC2A 3AY", address_line_1: "Great Eastern Street", when: "Tuesday 11:00" },
-  { label: "Battersea", postcode: "SW11 4NJ", address_line_1: "Battersea Park Road", when: "Friday 17:00" },
-  { label: "Hampstead", postcode: "NW3 1QG", address_line_1: "Hampstead High Street", when: "Saturday 14:00" },
-  { label: "Bermondsey", postcode: "SE16 4DG", address_line_1: "Jamaica Road", when: "Friday 17:00" },
+  { label: "Mayfair", postcode: "W1K 3JA", address1: "1 Grosvenor Square", when: "Tuesday 11:00" },
+  { label: "Covent Garden", postcode: "WC2E 9DD", address1: "Bow Street", when: "Friday 17:00" },
+  { label: "Shoreditch", postcode: "EC2A 3AY", address1: "Great Eastern Street", when: "Tuesday 11:00" },
+  { label: "Battersea", postcode: "SW11 4NJ", address1: "Battersea Park Road", when: "Friday 17:00" },
+  { label: "Hampstead", postcode: "NW3 1QG", address1: "Hampstead High Street", when: "Saturday 14:00" },
+  { label: "Bermondsey", postcode: "SE16 4DG", address1: "Jamaica Road", when: "Friday 17:00" },
 ];
 
 export const loader = async ({ request }) => {
@@ -72,11 +83,15 @@ export const action = async ({ request }) => {
     // integration in parallel is how you meet a rate limit you did not know
     // existed on the first day.
     try {
-      const parcel = parcelFor({ grams: perishable ? 2100 : 500, perishable });
+      const parcel = parcelFor({
+        grams: perishable ? 2100 : 500,
+        perishable,
+        id: `ibc-test-${journey.postcode.replace(/\s+/g, "")}`,
+      });
       const result = await quote({
         destination: {
           postcode: journey.postcode,
-          address_line_1: journey.address_line_1,
+          address1: journey.address1,
           city: "London",
         },
         parcel,
@@ -97,6 +112,22 @@ export const action = async ({ request }) => {
         message: error.message,
         status: error instanceof GophrError ? error.status : undefined,
         body: error instanceof GophrError ? error.body : undefined,
+        // The request is included on the FAILURE path too. Without it, an old
+        // build and a genuinely wrong request produce identical-looking
+        // output, and an afternoon goes on working out which you are looking
+        // at. Showing what was sent removes the ambiguity entirely.
+        request: buildQuoteBody({
+          destination: {
+            postcode: journey.postcode,
+            address1: journey.address1,
+            city: "London",
+          },
+          parcel: parcelFor({
+            grams: perishable ? 2100 : 500,
+            perishable,
+            id: `ibc-test-${journey.postcode.replace(/\s+/g, "")}`,
+          }),
+        }),
       });
     }
   }
@@ -130,7 +161,11 @@ export default function Courier() {
   };
 
   return (
-    <Page title="Courier" subtitle="Gophr connection test bench — changes nothing on the store">
+    <Page
+      title="Courier"
+      subtitle="Gophr connection test bench — changes nothing on the store"
+      titleMetadata={<Badge tone="info">{`Request shape ${SHAPE_VERSION.split(" —")[0]}`}</Badge>}
+    >
       <Layout>
         {/* ---------------------------------------------------- credentials */}
         <Layout.Section>
@@ -310,17 +345,30 @@ export default function Courier() {
                 </Banner>
               )}
 
-              {data?.results?.some((r) => !r.ok && r.status && r.status !== 401) && (
-                <Banner tone="warning" title="The key worked — now the request shape needs correcting">
-                  <Text as="p">
-                    Gophr&rsquo;s reference pages would not render, so the field names in the
-                    request are an educated guess. The error above names the field it
-                    objected to. Send it over and the fix is one function
-                    (<Text as="span" fontWeight="semibold">buildQuoteBody</Text> in
-                    gophr.server.js) — nothing else in the app depends on the shape.
-                  </Text>
+              {data?.results?.some((r) => !r.ok && r.status === 422) && (
+                <Banner tone="warning" title="422 — Gophr rejected the request body">
+                  <BlockStack gap="200">
+                    <Text as="p">
+                      <Text as="span" fontWeight="semibold">Open the raw view first and look at
+                      the request</Text>, not just the errors. If it contains{" "}
+                      <Text as="span" fontWeight="semibold">pickup_address1</Text> and a{" "}
+                      <Text as="span" fontWeight="semibold">parcels</Text> array on the
+                      dropoff, this build is current and the remaining errors are real.
+                    </Text>
+                    <Text as="p">
+                      If instead you see nested{" "}
+                      <Text as="span" fontWeight="semibold">address</Text> or{" "}
+                      <Text as="span" fontWeight="semibold">contact</Text> objects, an older
+                      build is still deployed — the badge beside the page title should read{" "}
+                      <Text as="span" fontWeight="semibold">Request shape v2</Text>.
+                    </Text>
+                  </BlockStack>
                 </Banner>
               )}
+
+              <Text as="p" tone="subdued" variant="bodySm">
+                Request shape: {SHAPE_VERSION}
+              </Text>
             </BlockStack>
           </Card>
         </Layout.Section>

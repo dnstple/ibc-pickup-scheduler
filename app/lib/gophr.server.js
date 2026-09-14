@@ -23,14 +23,29 @@
 //   · vehicle is chosen by Gophr from parcel size, weight and distance —
 //     there is no documented code to force one
 //
-// NOT confirmed, because the reference pages would not render for me:
-//   · the exact field names inside a pickup / dropoff / parcel
-//   · the exact shape of the quote response
+// Confirmed by a real 422 from the sandbox on 14 September 2026, which listed
+// every field it wanted by name:
+//   · fields are FLAT and PREFIXED, not nested objects —
+//     pickup_address1, pickup_postcode, pickup_country_code,
+//     dropoff_address1, dropoff_postcode, dropoff_country_code
+//   · `parcels` is required on BOTH the pickup and the dropoff, minimum one
+//   · each parcel needs a `parcel_external_id` string
+//   · unknown fields are ignored rather than rejected — the first attempt sent
+//     `sequence`, `address` and `contact` objects and Gophr complained only
+//     about what was missing, never about what was extra
 //
-// So `buildQuoteBody` below is a best guess, and `readQuote` reads the
-// response defensively. The Courier admin page prints the request and the
-// response verbatim, which is how we replace the guess with the truth in one
-// round trip instead of several.
+// STILL INFERRED, not confirmed:
+//   · the parcel dimension field names. Nothing complained about them, which
+//     on an API that ignores unknown fields means they were silently dropped
+//     rather than accepted. They are spelled `parcel_length`, `parcel_width`,
+//     `parcel_height`, `parcel_weight` here, following the same
+//     <object>_<field> convention every confirmed name uses.
+//     ⚠️ This matters: dimensions are what put a cake on a cargo bike. If the
+//     quotes come back suspiciously uniform between a 500g parcel and a 2.1kg
+//     one, the names are wrong and the vehicle is being chosen by distance
+//     alone.
+//   · the shape of the quote response — `readQuote` reads it defensively and
+//     reports which path it found a price at.
 
 const BASE_URLS = {
   sandbox: "https://api-sandbox.gophr.com/v2-commercial-api",
@@ -41,10 +56,10 @@ const BASE_URLS = {
 // rather than scattered through the call sites.
 export const PICKUP = {
   name: "Italian Bear Chocolate",
-  address_line_1: "29 Rathbone Place",
+  address1: "29 Rathbone Place",
   city: "London",
   postcode: "W1T 1JG",
-  country_code: "GB",
+  country_code: "GB", // ISO 3166-1 alpha-2
 };
 
 export function gophrEnv() {
@@ -184,44 +199,50 @@ async function call(path, { method = "GET", body, timeoutMs = 8000 } = {}) {
  *
  * `perishable` therefore does real work here, not just in the copy.
  */
-export function parcelFor({ grams = 500, perishable = false } = {}) {
-  return perishable
-    ? { length: 45, width: 45, height: 30, weight: Math.max(grams, 500) / 1000 }
-    : { length: 30, width: 25, height: 20, weight: Math.max(grams, 100) / 1000 };
+export function parcelFor({ grams = 500, perishable = false, id = "ibc-parcel-1" } = {}) {
+  const dims = perishable
+    ? { length: 45, width: 45, height: 30 }
+    : { length: 30, width: 25, height: 20 };
+  return {
+    parcel_external_id: id,
+    parcel_length: dims.length,
+    parcel_width: dims.width,
+    parcel_height: dims.height,
+    // Kilograms. A product with no weight set must not quote as a 0kg parcel.
+    parcel_weight: Math.max(Number(grams) || 0, perishable ? 500 : 100) / 1000,
+  };
 }
 
 /**
  * Build the quote request body.
  *
- * ⚠️ FIELD NAMES ARE UNCONFIRMED — see the header. If Gophr rejects this, the
- * Courier page will show exactly which field it objected to, and the fix is
- * this one function.
+ * The same parcel object appears in both the pickup and the dropoff, carrying
+ * the same `parcel_external_id`. That is how Gophr links the two ends: the id
+ * says "the thing collected here is the thing delivered there". It is what
+ * makes multi-drop work, and a single drop is just the one-item case.
  */
 export function buildQuoteBody({ destination, parcel, earliestPickup = null }) {
-  const body = {
-    pickups: [
+  const pickup = {
+    pickup_address1: PICKUP.address1,
+    pickup_city: PICKUP.city,
+    pickup_postcode: PICKUP.postcode,
+    pickup_country_code: PICKUP.country_code,
+    parcels: [parcel],
+  };
+  if (earliestPickup) pickup.earliest_pickup_time = earliestPickup;
+
+  return {
+    pickups: [pickup],
+    dropoffs: [
       {
-        sequence: 1,
-        address: { ...PICKUP },
-        contact: { name: PICKUP.name },
+        dropoff_address1: destination.address1 || "",
+        dropoff_city: destination.city || "London",
+        dropoff_postcode: destination.postcode,
+        dropoff_country_code: destination.country_code || "GB",
         parcels: [parcel],
       },
     ],
-    dropoffs: [
-      {
-        sequence: 1,
-        address: {
-          address_line_1: destination.address_line_1 || "",
-          city: destination.city || "London",
-          postcode: destination.postcode,
-          country_code: destination.country_code || "GB",
-        },
-        contact: { name: destination.name || "Customer" },
-      },
-    ],
   };
-  if (earliestPickup) body.pickups[0].earliest_pickup_time = earliestPickup;
-  return body;
 }
 
 /**

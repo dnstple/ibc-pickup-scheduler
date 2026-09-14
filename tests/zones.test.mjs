@@ -123,41 +123,91 @@ test("a cake is too big for a pushbike, which is the point", () => {
   // 40 x 30 x 30cm and 10kg. If a cake fits that, it goes by bike or moped
   // and arrives on its side.
   const cake = parcelFor({ grams: 2100, perishable: true });
-  const fitsPushbike = cake.length <= 40 && cake.width <= 30 && cake.height <= 30;
+  const fitsPushbike =
+    cake.parcel_length <= 40 && cake.parcel_width <= 30 && cake.parcel_height <= 30;
   assert.equal(fitsPushbike, false);
 });
 
 test("a normal basket stays small enough for the cheap vehicle", () => {
   const jars = parcelFor({ grams: 900, perishable: false });
-  assert.ok(jars.length <= 40 && jars.width <= 30 && jars.height <= 30);
+  assert.ok(
+    jars.parcel_length <= 40 && jars.parcel_width <= 30 && jars.parcel_height <= 30
+  );
 });
 
 test("weight is sent in kilograms, not grams", () => {
-  assert.equal(parcelFor({ grams: 2100, perishable: true }).weight, 2.1);
-  assert.equal(parcelFor({ grams: 500 }).weight, 0.5);
+  assert.equal(parcelFor({ grams: 2100, perishable: true }).parcel_weight, 2.1);
+  assert.equal(parcelFor({ grams: 500 }).parcel_weight, 0.5);
 });
 
 test("a weightless basket still gets a sane minimum", () => {
   // Products with no weight set must not quote as a 0kg parcel.
-  assert.ok(parcelFor({ grams: 0 }).weight > 0);
-  assert.ok(parcelFor({}).weight > 0);
+  assert.ok(parcelFor({ grams: 0 }).parcel_weight > 0);
+  assert.ok(parcelFor({}).parcel_weight > 0);
+  assert.ok(parcelFor({ grams: null }).parcel_weight > 0);
+});
+
+test("every parcel carries an external id — Gophr rejects one without", () => {
+  // Confirmed by the sandbox: "parcels.0.parcel_external_id field must be
+  // present in the request".
+  assert.equal(typeof parcelFor({}).parcel_external_id, "string");
+  assert.ok(parcelFor({}).parcel_external_id.length > 0);
+  assert.equal(parcelFor({ id: "ibc-test-W1K3JA" }).parcel_external_id, "ibc-test-W1K3JA");
 });
 
 /* ------------------------------------------------------------ quote request */
+// The shape below is not a guess any more. A 422 from the sandbox on
+// 14 September 2026 named every one of these fields.
 
-test("the pickup is always the Fitzrovia shop", () => {
+test("fields are flat and prefixed, not nested objects", () => {
   const body = buildQuoteBody({
-    destination: { postcode: "W1K 3JA" },
+    destination: { postcode: "W1K 3JA", address1: "1 Grosvenor Square" },
     parcel: parcelFor({}),
   });
-  assert.equal(body.pickups[0].address.postcode, "W1T 1JG");
-  assert.equal(body.pickups[0].address.address_line_1, PICKUP.address_line_1);
-  assert.equal(body.dropoffs[0].address.postcode, "W1K 3JA");
+  const pickup = body.pickups[0];
+  const dropoff = body.dropoffs[0];
+
+  assert.equal(pickup.pickup_address1, PICKUP.address1);
+  assert.equal(pickup.pickup_postcode, "W1T 1JG");
+  assert.equal(pickup.pickup_country_code, "GB");
+  assert.equal(dropoff.dropoff_address1, "1 Grosvenor Square");
+  assert.equal(dropoff.dropoff_postcode, "W1K 3JA");
+
+  // The first attempt sent these and was rejected for it.
+  assert.equal("address" in pickup, false);
+  assert.equal("contact" in pickup, false);
 });
 
-test("country code defaults to GB rather than being omitted", () => {
+test("parcels appear on BOTH ends, with the same id linking them", () => {
+  // Gophr requires a parcels array on the dropoff as well as the pickup, at
+  // least one item each. The shared external id is what says "the thing
+  // collected here is the thing delivered there".
+  const parcel = parcelFor({ id: "ibc-test-1" });
+  const body = buildQuoteBody({ destination: { postcode: "N1 9GU" }, parcel });
+
+  assert.ok(Array.isArray(body.pickups[0].parcels));
+  assert.ok(Array.isArray(body.dropoffs[0].parcels));
+  assert.equal(body.pickups[0].parcels.length, 1);
+  assert.equal(body.dropoffs[0].parcels.length, 1);
+  assert.equal(
+    body.pickups[0].parcels[0].parcel_external_id,
+    body.dropoffs[0].parcels[0].parcel_external_id
+  );
+});
+
+test("country code defaults to GB on both ends rather than being omitted", () => {
+  // An absent country code is reported as an invalid one, which sends you
+  // looking for a formatting problem that is not there.
   const body = buildQuoteBody({ destination: { postcode: "N1 9GU" }, parcel: parcelFor({}) });
-  assert.equal(body.dropoffs[0].address.country_code, "GB");
+  assert.equal(body.dropoffs[0].dropoff_country_code, "GB");
+  assert.equal(body.pickups[0].pickup_country_code, "GB");
+});
+
+test("a missing street line is sent as an empty string, not undefined", () => {
+  // JSON.stringify drops undefined, and Gophr then says the field is absent.
+  const body = buildQuoteBody({ destination: { postcode: "N1 9GU" }, parcel: parcelFor({}) });
+  assert.equal(body.dropoffs[0].dropoff_address1, "");
+  assert.equal(JSON.stringify(body).includes("dropoff_address1"), true);
 });
 
 test("a scheduled pickup is only sent when one was asked for", () => {
