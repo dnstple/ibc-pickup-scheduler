@@ -123,28 +123,42 @@ test("a cake is too big for a pushbike, which is the point", () => {
   // 40 x 30 x 30cm and 10kg. If a cake fits that, it goes by bike or moped
   // and arrives on its side.
   const cake = parcelFor({ grams: 2100, perishable: true });
-  const fitsPushbike =
-    cake.parcel_length <= 40 && cake.parcel_width <= 30 && cake.parcel_height <= 30;
+  const fitsPushbike = cake.length <= 40 && cake.width <= 30 && cake.height <= 30;
   assert.equal(fitsPushbike, false);
 });
 
 test("a normal basket stays small enough for the cheap vehicle", () => {
   const jars = parcelFor({ grams: 900, perishable: false });
-  assert.ok(
-    jars.parcel_length <= 40 && jars.parcel_width <= 30 && jars.parcel_height <= 30
-  );
+  assert.ok(jars.length <= 40 && jars.width <= 30 && jars.height <= 30);
+});
+
+test("dimensions are bare names, the external id is prefixed", () => {
+  // Gophr's validator asked for pickups.0.parcels.0.width, not parcel_width,
+  // while insisting on parcel_external_id. The convention is genuinely mixed,
+  // so this test exists to stop anyone "tidying" it into consistency.
+  const p = parcelFor({});
+  for (const bare of ["length", "width", "height", "weight"]) {
+    assert.ok(bare in p, `${bare} must be sent unprefixed`);
+    assert.equal(`parcel_${bare}` in p, false, `parcel_${bare} is the wrong name`);
+  }
+  assert.ok("parcel_external_id" in p);
+});
+
+test("every dimension is a number greater than zero", () => {
+  // Gophr rejects "not greater than 0" as well as absent, so a zero is as
+  // fatal as a missing field.
+  for (const args of [{}, { grams: 0 }, { grams: null }, { grams: 2100, perishable: true }]) {
+    const p = parcelFor(args);
+    for (const key of ["length", "width", "height", "weight"]) {
+      assert.equal(typeof p[key], "number", `${key} must be a number`);
+      assert.ok(p[key] > 0, `${key} must be greater than zero`);
+    }
+  }
 });
 
 test("weight is sent in kilograms, not grams", () => {
-  assert.equal(parcelFor({ grams: 2100, perishable: true }).parcel_weight, 2.1);
-  assert.equal(parcelFor({ grams: 500 }).parcel_weight, 0.5);
-});
-
-test("a weightless basket still gets a sane minimum", () => {
-  // Products with no weight set must not quote as a 0kg parcel.
-  assert.ok(parcelFor({ grams: 0 }).parcel_weight > 0);
-  assert.ok(parcelFor({}).parcel_weight > 0);
-  assert.ok(parcelFor({ grams: null }).parcel_weight > 0);
+  assert.equal(parcelFor({ grams: 2100, perishable: true }).weight, 2.1);
+  assert.equal(parcelFor({ grams: 500 }).weight, 0.5);
 });
 
 test("every parcel carries an external id — Gophr rejects one without", () => {

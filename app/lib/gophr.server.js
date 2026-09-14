@@ -34,16 +34,20 @@
 //     `sequence`, `address` and `contact` objects and Gophr complained only
 //     about what was missing, never about what was extra
 //
-// STILL INFERRED, not confirmed:
-//   · the parcel dimension field names. Nothing complained about them, which
-//     on an API that ignores unknown fields means they were silently dropped
-//     rather than accepted. They are spelled `parcel_length`, `parcel_width`,
-//     `parcel_height`, `parcel_weight` here, following the same
-//     <object>_<field> convention every confirmed name uses.
-//     ⚠️ This matters: dimensions are what put a cake on a cargo bike. If the
-//     quotes come back suspiciously uniform between a 500g parcel and a 2.1kg
-//     one, the names are wrong and the vehicle is being chosen by distance
-//     alone.
+// Also confirmed, by a second 422 once the shape above was right:
+//   · parcel dimensions are NOT prefixed. They are bare `length`, `width`,
+//     `height` and `weight`, and each must be a number greater than zero.
+//     The convention is mixed — `parcel_external_id` carries the prefix and
+//     the dimensions do not — which is exactly why it could not be guessed
+//     from the other field names.
+//
+// STILL INFERRED:
+//   · the UNIT of `weight`. Sent here as kilograms, because Gophr's published
+//     vehicle table is in kg (pushbike 10kg, cargo bike 100kg). If it wants
+//     grams instead, a 2.1kg cake reads as 2.1 grams and gets a pushbike.
+//     ⚠️ Check this the moment quotes return: a cake and a small parcel must
+//     not come back at the same price, and the response should name a
+//     different vehicle for each.
 //   · the shape of the quote response — `readQuote` reads it defensively and
 //     reports which path it found a price at.
 
@@ -204,12 +208,16 @@ export function parcelFor({ grams = 500, perishable = false, id = "ibc-parcel-1"
     ? { length: 45, width: 45, height: 30 }
     : { length: 30, width: 25, height: 20 };
   return {
+    // Prefixed. The dimensions below are not — Gophr's own validator says so.
     parcel_external_id: id,
-    parcel_length: dims.length,
-    parcel_width: dims.width,
-    parcel_height: dims.height,
-    // Kilograms. A product with no weight set must not quote as a 0kg parcel.
-    parcel_weight: Math.max(Number(grams) || 0, perishable ? 500 : 100) / 1000,
+    // Centimetres, bare names, each must be greater than zero.
+    length: dims.length,
+    width: dims.width,
+    height: dims.height,
+    // Kilograms (see the header — unit still to be confirmed). A product with
+    // no weight set must not quote as a 0kg parcel: Gophr rejects anything
+    // that is not greater than zero.
+    weight: Math.max(Number(grams) || 0, perishable ? 500 : 100) / 1000,
   };
 }
 

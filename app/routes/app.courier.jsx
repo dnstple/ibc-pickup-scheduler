@@ -38,7 +38,7 @@ import {
 // Bumped whenever the request shape changes. Shown on the page so "is the new
 // code actually running?" is answered by looking, not by inferring from the
 // error message.
-const SHAPE_VERSION = "v2 — flat prefixed fields, parcels on both ends";
+const SHAPE_VERSION = "v3 — bare parcel dimensions, prefixed address fields";
 import { ZONES, TEST_ZONE, zoneForPostcode, shopifyPostcodeList } from "../lib/zones";
 
 // The six journeys from the scope. Three are deliberately Friday evening,
@@ -335,6 +335,25 @@ export default function Courier() {
                 </>
               )}
 
+              {data?.results?.every((r) => r.ok) && data?.results?.length > 0 && (
+                <Banner tone="success" title="Quotes are coming back — now check the weight unit">
+                  <BlockStack gap="200">
+                    <Text as="p">
+                      Run the <Text as="span" fontWeight="semibold">other</Text> button and
+                      compare. A 500g parcel and a 2.1kg cake{" "}
+                      <Text as="span" fontWeight="semibold">must not return the same price</Text>.
+                      If they do, Gophr is pricing on distance alone — either the weight is
+                      being read in the wrong unit, or the dimensions are not reaching it, and
+                      a cake would go out on a moped.
+                    </Text>
+                    <Text as="p" tone="subdued">
+                      Look in the raw response for a vehicle name too. Different vehicles for
+                      the two runs is the clearest confirmation there is.
+                    </Text>
+                  </BlockStack>
+                </Banner>
+              )}
+
               {data?.results?.some((r) => !r.ok && r.status === 401) && (
                 <Banner tone="critical" title="401 — the key was rejected, not the request">
                   <Text as="p">
@@ -350,10 +369,11 @@ export default function Courier() {
                   <BlockStack gap="200">
                     <Text as="p">
                       <Text as="span" fontWeight="semibold">Open the raw view first and look at
-                      the request</Text>, not just the errors. If it contains{" "}
-                      <Text as="span" fontWeight="semibold">pickup_address1</Text> and a{" "}
-                      <Text as="span" fontWeight="semibold">parcels</Text> array on the
-                      dropoff, this build is current and the remaining errors are real.
+                      the request</Text>, not just the errors. If each parcel carries bare{" "}
+                      <Text as="span" fontWeight="semibold">length / width / height / weight</Text>{" "}
+                      alongside a prefixed{" "}
+                      <Text as="span" fontWeight="semibold">parcel_external_id</Text>, this
+                      build is current and the remaining errors are real.
                     </Text>
                     <Text as="p">
                       If instead you see nested{" "}
