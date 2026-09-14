@@ -1,11 +1,12 @@
 // Courier — the Gophr connection test bench.
 //
-// This page exists to answer three questions with evidence rather than
+// This page exists to answer four questions with evidence rather than
 // assumption, before a line of storefront code is written:
 //
-//   1. Do the credentials work?
-//   2. What does a quote request have to look like?
+//   1. Do the credentials work?                                    ✓ answered
+//   2. What does a quote request have to look like?                ✓ answered
 //   3. What do the six representative journeys actually cost?
+//   4. Does Gophr put a cake on a cargo bike, or on a moped?
 //
 // It makes no changes to the store, writes nothing, and is invisible to
 // customers. Running it against the sandbox dispatches no riders.
@@ -24,6 +25,7 @@ import {
   Layout,
   List,
   Page,
+  Select,
   Text,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
@@ -34,29 +36,67 @@ import {
   buildQuoteBody,
   GophrError,
 } from "../lib/gophr.server";
+import { ZONES, TEST_ZONE, zoneForPostcode, shopifyPostcodeList } from "../lib/zones";
+import { zonedParts, addDays, dateLabel, wallTimeToInstant, toZonedISO } from "../lib/timezone";
 
 // Bumped whenever the request shape changes. Shown on the page so "is the new
 // code actually running?" is answered by looking, not by inferring from the
 // error message.
-const SHAPE_VERSION = "v3 — bare parcel dimensions, prefixed address fields";
-import { ZONES, TEST_ZONE, zoneForPostcode, shopifyPostcodeList } from "../lib/zones";
+const SHAPE_VERSION = "v4 — scheduled pickups, prices read as objects";
 
-// The six journeys from the scope. Three are deliberately Friday evening,
-// because that is where a flat rate is lost — a Tuesday-morning average will
-// flatter the numbers and set the price too low.
+const TZ = "Europe/London";
+
+// The six journeys from the scope.
 const TEST_JOURNEYS = [
-  { label: "Mayfair", postcode: "W1K 3JA", address1: "1 Grosvenor Square", when: "Tuesday 11:00" },
-  { label: "Covent Garden", postcode: "WC2E 9DD", address1: "Bow Street", when: "Friday 17:00" },
-  { label: "Shoreditch", postcode: "EC2A 3AY", address1: "Great Eastern Street", when: "Tuesday 11:00" },
-  { label: "Battersea", postcode: "SW11 4NJ", address1: "Battersea Park Road", when: "Friday 17:00" },
-  { label: "Hampstead", postcode: "NW3 1QG", address1: "Hampstead High Street", when: "Saturday 14:00" },
-  { label: "Bermondsey", postcode: "SE16 4DG", address1: "Jamaica Road", when: "Friday 17:00" },
+  { label: "Mayfair", postcode: "W1K 3JA", address1: "1 Grosvenor Square" },
+  { label: "Covent Garden", postcode: "WC2E 9DD", address1: "Bow Street" },
+  { label: "Shoreditch", postcode: "EC2A 3AY", address1: "Great Eastern Street" },
+  { label: "Battersea", postcode: "SW11 4NJ", address1: "Battersea Park Road" },
+  { label: "Hampstead", postcode: "NW3 1QG", address1: "Hampstead High Street" },
+  { label: "Bermondsey", postcode: "SE16 4DG", address1: "Jamaica Road" },
 ];
+
+/**
+ * The next occurrence of a weekday at a given wall-clock time, in London.
+ *
+ * Always at least one day ahead, so "next Friday" never resolves to a time
+ * that has already passed today. Computed on the SERVER and passed down —
+ * a value derived from the clock during render differs between the server
+ * pass and the client pass, and React calls that a hydration mismatch.
+ */
+function nextWeekdayAt(weekdayName, time, now = new Date()) {
+  let dateStr = zonedParts(now, TZ).dateStr;
+  for (let i = 1; i <= 8; i += 1) {
+    const candidate = addDays(dateStr, i);
+    if (dateLabel(candidate).weekday === weekdayName) {
+      return toZonedISO(wallTimeToInstant(candidate, time, TZ), TZ);
+    }
+  }
+  return null; // unreachable for a real weekday name
+}
+
+/**
+ * When to quote for.
+ *
+ * "Right now" is the easy one and the least useful: a Tuesday-morning average
+ * flatters the numbers. Friday at five is where a flat rate is lost, and it is
+ * the figure that should set the prices.
+ */
+function pickupOptions(now = new Date()) {
+  return [
+    { value: "now", label: "Right now", iso: null },
+    { value: "tue11", label: "Next Tuesday, 11:00", iso: nextWeekdayAt("Tuesday", "11:00", now) },
+    { value: "fri17", label: "Next Friday, 17:00 — the one that matters", iso: nextWeekdayAt("Friday", "17:00", now) },
+    { value: "sat14", label: "Next Saturday, 14:00", iso: nextWeekdayAt("Saturday", "14:00", now) },
+    { value: "sun12", label: "Next Sunday, 12:00", iso: nextWeekdayAt("Sunday", "12:00", now) },
+  ];
+}
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
   return {
     status: gophrStatus(),
+    pickups: pickupOptions().map(({ value, label, iso }) => ({ value, label, iso })),
     journeys: TEST_JOURNEYS.map((j) => ({
       ...j,
       zone: zoneForPostcode(j.postcode)?.id || null,
@@ -76,26 +116,29 @@ export const action = async ({ request }) => {
   await authenticate.admin(request);
   const form = await request.formData();
   const perishable = form.get("perishable") === "true";
+  const when = form.get("when") || "now";
+
+  // Recomputed here rather than trusted from the form. The client has no
+  // business deciding what instant the server asks a courier about.
+  const chosen = pickupOptions().find((o) => o.value === when) || { iso: null, label: "Right now" };
 
   const results = [];
   for (const journey of TEST_JOURNEYS) {
     // Deliberately sequential. Six requests is nothing, and hammering a new
     // integration in parallel is how you meet a rate limit you did not know
     // existed on the first day.
+    const parcel = parcelFor({
+      grams: perishable ? 2100 : 500,
+      perishable,
+      id: `ibc-test-${journey.postcode.replace(/\s+/g, "")}`,
+    });
+    const destination = {
+      postcode: journey.postcode,
+      address1: journey.address1,
+      city: "London",
+    };
     try {
-      const parcel = parcelFor({
-        grams: perishable ? 2100 : 500,
-        perishable,
-        id: `ibc-test-${journey.postcode.replace(/\s+/g, "")}`,
-      });
-      const result = await quote({
-        destination: {
-          postcode: journey.postcode,
-          address1: journey.address1,
-          city: "London",
-        },
-        parcel,
-      });
+      const result = await quote({ destination, parcel, earliestPickup: chosen.iso });
       results.push({
         label: journey.label,
         postcode: journey.postcode,
@@ -116,49 +159,39 @@ export const action = async ({ request }) => {
         // build and a genuinely wrong request produce identical-looking
         // output, and an afternoon goes on working out which you are looking
         // at. Showing what was sent removes the ambiguity entirely.
-        request: buildQuoteBody({
-          destination: {
-            postcode: journey.postcode,
-            address1: journey.address1,
-            city: "London",
-          },
-          parcel: parcelFor({
-            grams: perishable ? 2100 : 500,
-            perishable,
-            id: `ibc-test-${journey.postcode.replace(/\s+/g, "")}`,
-          }),
-        }),
+        request: buildQuoteBody({ destination, parcel, earliestPickup: chosen.iso }),
       });
     }
   }
-  return { results, perishable, ranAt: new Date().toISOString() };
+  return {
+    results,
+    perishable,
+    when: chosen.label,
+    whenIso: chosen.iso,
+    ranAt: new Date().toISOString(),
+  };
 };
 
-function Money({ price }) {
-  if (!price || price.amount == null) return <Text as="span" tone="subdued">—</Text>;
-  // Gophr may send pence or pounds; until we know which, show both readings
-  // rather than picking one and being quietly wrong by a factor of 100.
-  const asPounds = price.amount > 200 ? (price.amount / 100).toFixed(2) : price.amount.toFixed(2);
-  return (
-    <BlockStack gap="050">
-      <Text as="span" fontWeight="semibold">£{asPounds}</Text>
-      <Text as="span" tone="subdued" variant="bodySm">raw {price.amount} · {price.path}</Text>
-    </BlockStack>
-  );
-}
+const money = (m) => (m ? `£${m.amount.toFixed(2)}` : "—");
 
 export default function Courier() {
-  const { status, journeys, zones, testZone } = useLoaderData();
+  const { status, journeys, zones, testZone, pickups } = useLoaderData();
   const fetcher = useFetcher();
   const [showRaw, setShowRaw] = useState(false);
+  const [when, setWhen] = useState("now");
   const running = fetcher.state !== "idle";
   const data = fetcher.data;
 
   const run = (perishable) => {
     const body = new FormData();
     body.set("perishable", perishable ? "true" : "false");
+    body.set("when", when);
     fetcher.submit(body, { method: "POST" });
   };
+
+  const ok = data?.results?.filter((r) => r.ok) || [];
+  const vehicles = [...new Set(ok.map((r) => r.price?.vehicleType).filter((v) => v != null))];
+  const grossTotal = ok.reduce((sum, r) => sum + (r.price?.gross?.amount || 0), 0);
 
   return (
     <Page
@@ -207,7 +240,6 @@ export default function Courier() {
               </InlineStack>
               <Text as="p" tone="subdued" variant="bodySm">{status.baseUrl}</Text>
 
-              {/* ---- why a 401 happens, answered before you have to ask ---- */}
               {status.key?.mismatch === "production-key-on-sandbox" && (
                 <Banner tone="critical" title="This key does not belong to the sandbox">
                   <BlockStack gap="200">
@@ -217,22 +249,6 @@ export default function Courier() {
                       not, so it is a production key being sent to the sandbox endpoint —
                       which returns 401 without explaining why.
                     </Text>
-                    <Text as="p" fontWeight="semibold">Two ways out:</Text>
-                    <List>
-                      <List.Item>
-                        Generate a <Text as="span" fontWeight="semibold">sandbox</Text> key
-                        in Gophr&rsquo;s Developer&rsquo;s Hub and replace
-                        GOPHR_API_KEY. If you cannot see an environment option there, ask
-                        Gophr to enable sandbox access — some accounts have it switched off.
-                      </List.Item>
-                      <List.Item>
-                        Or set <Text as="span" fontWeight="semibold">GOPHR_ENV = production</Text>{" "}
-                        and use the key you have. <Text as="span" fontWeight="semibold">Quoting
-                        is free and dispatches nobody</Text>, so this page stays safe — but
-                        the environment badge will turn red, and it should stay red until
-                        the booking code exists.
-                      </List.Item>
-                    </List>
                   </BlockStack>
                 </Banner>
               )}
@@ -240,16 +256,15 @@ export default function Courier() {
               {status.key?.mismatch === "sandbox-key-on-production" && (
                 <Banner tone="warning" title="A sandbox key is being sent to production">
                   The key begins with <Text as="span" fontWeight="semibold">sand-</Text>,
-                  which is a sandbox key, but GOPHR_ENV is set to production. Set
-                  GOPHR_ENV back to sandbox.
+                  which is a sandbox key, but GOPHR_ENV is set to production.
                 </Banner>
               )}
 
               {status.key?.hadWhitespace && (
                 <Banner tone="warning" title="The key had whitespace around it">
                   A trailing space or newline came along with the paste. It is being
-                  trimmed before the request, so this is handled — but it is worth tidying
-                  in Vercel so the next person is not chasing it.
+                  trimmed before the request, so this is handled — but worth tidying in
+                  Vercel so the next person is not chasing it.
                 </Banner>
               )}
 
@@ -260,14 +275,6 @@ export default function Courier() {
                   The key itself is never read into this page.
                 </Text>
               )}
-
-              {status.dispatchesRealRiders && (
-                <Banner tone="critical" title="This is the live environment">
-                  Quotes are free, but anything that creates a job here sends a real rider
-                  to Rathbone Place and charges your account. Set GOPHR_ENV to sandbox
-                  while testing.
-                </Banner>
-              )}
             </BlockStack>
           </Card>
         </Layout.Section>
@@ -277,9 +284,23 @@ export default function Courier() {
           <Card>
             <BlockStack gap="300">
               <Text as="h2" variant="headingMd">The six journeys</Text>
+
+              <Select
+                label="Quote for"
+                options={pickups.map((p) => ({ label: p.label, value: p.value }))}
+                value={when}
+                onChange={setWhen}
+                helpText={
+                  pickups.find((p) => p.value === when)?.iso ||
+                  "Whatever the time is now, which on a quiet evening flatters the numbers."
+                }
+              />
+
               <Text as="p" tone="subdued">
-                Three of these are Friday evening on purpose. That is where a flat rate is
-                lost, and it is the number that should set the prices — not the Tuesday one.
+                <Text as="span" fontWeight="semibold">Friday at five is the one that
+                matters.</Text> A flat rate is a bet that the average job costs less than
+                you charge, and central London on a Friday evening is where that bet is
+                lost. Quote for it before setting any price.
               </Text>
 
               <InlineStack gap="200">
@@ -296,32 +317,47 @@ export default function Courier() {
                   disabled={!status.configured}
                   onClick={() => run(true)}
                 >
-                  Quote as a cake (2.1kg, cargo bike)
+                  Quote as a cake (2.1kg, 45&times;45&times;30cm)
                 </Button>
               </InlineStack>
 
-              <Text as="p" tone="subdued" variant="bodySm">
-                Gophr chooses the vehicle from parcel size, weight and distance — there is
-                no code to force one. A cake is quoted at dimensions a pushbike cannot
-                take, which is what puts it on a cargo bike and keeps the box level.
-              </Text>
-
               {data?.results && (
                 <>
+                  <InlineStack gap="200" blockAlign="center">
+                    <Badge tone={data.perishable ? "attention" : "info"}>
+                      {data.perishable ? "Cake — 2.1kg" : "Normal basket — 500g"}
+                    </Badge>
+                    <Badge>{data.when}</Badge>
+                    {vehicles.length === 1 && <Badge>{`vehicle_type ${vehicles[0]}`}</Badge>}
+                  </InlineStack>
+
                   <DataTable
-                    columnContentTypes={["text", "text", "text", "text"]}
-                    headings={["Destination", "Postcode", "Zone", "Quote"]}
+                    columnContentTypes={["text", "text", "text", "numeric", "numeric", "numeric"]}
+                    headings={["Destination", "Zone", "Vehicle", "Net", "Gross", "Minutes"]}
                     rows={data.results.map((r) => [
                       r.label,
-                      r.postcode,
                       journeys.find((j) => j.postcode === r.postcode)?.zone || "—",
+                      r.ok ? (r.price?.vehicleType ?? "—") : "—",
+                      r.ok ? money(r.price?.net) : "",
                       r.ok
-                        ? <Money price={r.price} />
+                        ? money(r.price?.gross)
                         : <Text as="span" tone="critical">
                             {r.status ? `${r.status} — ` : ""}{r.message}
                           </Text>,
+                      r.ok ? (r.price?.minRealisticMinutes ?? "—") : "",
                     ])}
+                    totals={["", "", "", "", `£${grossTotal.toFixed(2)}`, ""]}
+                    showTotalsInFooter
                   />
+
+                  <Text as="p" tone="subdued" variant="bodySm">
+                    <Text as="span" fontWeight="semibold">Net is ex-VAT, gross is inc-VAT</Text>{" "}
+                    (gross is exactly net &times; 1.2). If you are VAT registered, net is
+                    your real cost and gross is the number to compare against what a
+                    customer pays. Minutes is Gophr&rsquo;s own realistic door-to-door
+                    estimate.
+                  </Text>
+
                   <Button onClick={() => setShowRaw((v) => !v)} variant="plain">
                     {showRaw ? "Hide" : "Show"} the raw request and response
                   </Button>
@@ -335,20 +371,25 @@ export default function Courier() {
                 </>
               )}
 
-              {data?.results?.every((r) => r.ok) && data?.results?.length > 0 && (
-                <Banner tone="success" title="Quotes are coming back — now check the weight unit">
+              {ok.length > 0 && (
+                <Banner
+                  tone={data.perishable ? "info" : "success"}
+                  title={
+                    data.perishable
+                      ? "Now compare this against the normal basket"
+                      : "Now run it as a cake and compare"
+                  }
+                >
                   <BlockStack gap="200">
                     <Text as="p">
-                      Run the <Text as="span" fontWeight="semibold">other</Text> button and
-                      compare. A 500g parcel and a 2.1kg cake{" "}
-                      <Text as="span" fontWeight="semibold">must not return the same price</Text>.
-                      If they do, Gophr is pricing on distance alone — either the weight is
-                      being read in the wrong unit, or the dimensions are not reaching it, and
-                      a cake would go out on a moped.
+                      The <Text as="span" fontWeight="semibold">Vehicle</Text> column is the
+                      evidence. A 500g parcel and a 2.1kg cake must not come back on the
+                      same vehicle code at the same price.
                     </Text>
-                    <Text as="p" tone="subdued">
-                      Look in the raw response for a vehicle name too. Different vehicles for
-                      the two runs is the clearest confirmation there is.
+                    <Text as="p">
+                      If they do, size and weight are not reaching Gophr&rsquo;s vehicle
+                      decision — most likely because the weight unit is wrong — and a
+                      cake would go out on a moped, arriving on its side.
                     </Text>
                   </BlockStack>
                 </Banner>
@@ -356,33 +397,20 @@ export default function Courier() {
 
               {data?.results?.some((r) => !r.ok && r.status === 401) && (
                 <Banner tone="critical" title="401 — the key was rejected, not the request">
-                  <Text as="p">
-                    Nothing is wrong with the request body: it never got that far. This is
-                    authentication. Check the credentials card above — the commonest cause
-                    is a production key being sent to the sandbox.
-                  </Text>
+                  Nothing is wrong with the request body: it never got that far. Check the
+                  credentials card above.
                 </Banner>
               )}
 
               {data?.results?.some((r) => !r.ok && r.status === 422) && (
                 <Banner tone="warning" title="422 — Gophr rejected the request body">
-                  <BlockStack gap="200">
-                    <Text as="p">
-                      <Text as="span" fontWeight="semibold">Open the raw view first and look at
-                      the request</Text>, not just the errors. If each parcel carries bare{" "}
-                      <Text as="span" fontWeight="semibold">length / width / height / weight</Text>{" "}
-                      alongside a prefixed{" "}
-                      <Text as="span" fontWeight="semibold">parcel_external_id</Text>, this
-                      build is current and the remaining errors are real.
-                    </Text>
-                    <Text as="p">
-                      If instead you see nested{" "}
-                      <Text as="span" fontWeight="semibold">address</Text> or{" "}
-                      <Text as="span" fontWeight="semibold">contact</Text> objects, an older
-                      build is still deployed — the badge beside the page title should read{" "}
-                      <Text as="span" fontWeight="semibold">Request shape v2</Text>.
-                    </Text>
-                  </BlockStack>
+                  <Text as="p">
+                    Open the raw view and read the request, not just the errors. Each
+                    parcel should carry bare{" "}
+                    <Text as="span" fontWeight="semibold">length / width / height / weight</Text>{" "}
+                    alongside a prefixed{" "}
+                    <Text as="span" fontWeight="semibold">parcel_external_id</Text>.
+                  </Text>
                 </Banner>
               )}
 

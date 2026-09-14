@@ -18,10 +18,24 @@ import {
 import {
   parcelFor,
   readQuote,
+  readAmount,
   buildQuoteBody,
   diagnoseKey,
   PICKUP,
 } from "../app/lib/gophr.server.js";
+
+// A real sandbox quote, copied verbatim from the first successful run.
+const REAL_QUOTE = {
+  data: {
+    job_priority: 0,
+    vehicle_type: 10,
+    price_net: { amount: 7.5, currency: "GBP" },
+    price_gross: { amount: 9, currency: "GBP" },
+    pickup_eta: "2026-09-14T20:32:17+01:00",
+    delivery_eta: "2026-09-14T20:45:57+01:00",
+    min_realistic_time: 41,
+  },
+};
 
 /* ------------------------------------------------------------ outward codes */
 
@@ -238,22 +252,53 @@ test("a scheduled pickup is only sent when one was asked for", () => {
 
 /* ----------------------------------------------------------- reading a price */
 
-test("a price is found wherever Gophr puts it, and says where", () => {
-  assert.equal(readQuote({ price_gross: 1240 }).amount, 1240);
-  assert.equal(readQuote({ data: { price: 9.5 } }).amount, 9.5);
-  assert.equal(readQuote({ data: { price: 9.5 } }).path, "data.price");
+test("prices are objects, not numbers — the bug that showed six dashes", () => {
+  // The first working run returned { amount: 7.5, currency: "GBP" } and the
+  // parser was looking for a bare number, so every price read as null.
+  const q = readQuote(REAL_QUOTE);
+  assert.equal(q.gross.amount, 9);
+  assert.equal(q.net.amount, 7.5);
+  assert.equal(q.currency, "GBP");
+  assert.equal(q.amount, 9, "the headline figure is the gross one");
+  assert.equal(q.path, "data.price_gross");
 });
 
-test("a numeric string is read as a number", () => {
-  assert.equal(readQuote({ price: "12.40" }).amount, 12.4);
+test("gross is net plus VAT, which is how to read the two", () => {
+  const q = readQuote(REAL_QUOTE);
+  assert.equal(Number((q.gross.amount / q.net.amount).toFixed(2)), 1.2);
+});
+
+test("the vehicle code and timings come through", () => {
+  const q = readQuote(REAL_QUOTE);
+  // The vehicle code is the only evidence that size and weight reached the
+  // decision. Without it there is no way to tell a cargo bike from a moped.
+  assert.equal(q.vehicleType, 10);
+  assert.equal(q.minRealisticMinutes, 41);
+  assert.equal(q.pickupEta, "2026-09-14T20:32:17+01:00");
+  assert.equal(q.deliveryEta, "2026-09-14T20:45:57+01:00");
+});
+
+test("bare numbers and numeric strings still read, for other shapes", () => {
+  assert.equal(readAmount(1240).amount, 1240);
+  assert.equal(readAmount("12.40").amount, 12.4);
+  assert.equal(readAmount({ amount: "7.50", currency: "GBP" }).amount, 7.5);
 });
 
 test("an unrecognised shape reports no price rather than inventing one", () => {
   // The one thing this must never do is return a plausible number it made up.
   assert.equal(readQuote({ something: "else" }).amount, null);
-  assert.equal(readQuote({ price: "not a number" }).amount, null);
+  assert.equal(readQuote({ data: { price: "not a number" } }).amount, null);
   assert.equal(readQuote(null).amount, null);
-  assert.equal(readQuote({ price: null }).amount, null);
+  assert.equal(readQuote({ data: { price_gross: null } }).amount, null);
+  assert.equal(readAmount(""), null);
+  assert.equal(readAmount({ amount: undefined }), null);
+});
+
+test("a missing vehicle or timing is null, never zero", () => {
+  // Zero minutes would read as "instant" on the page.
+  const q = readQuote({ data: { price_gross: { amount: 5, currency: "GBP" } } });
+  assert.equal(q.vehicleType, null);
+  assert.equal(q.minRealisticMinutes, null);
 });
 
 /* --------------------------------------------------------- key diagnostics */

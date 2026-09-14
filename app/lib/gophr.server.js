@@ -41,15 +41,22 @@
 //     the dimensions do not — which is exactly why it could not be guessed
 //     from the other field names.
 //
+// And confirmed by the first successful quote, 14 September 2026:
+//   · the response is
+//       { data: { job_priority, vehicle_type, price_net, price_gross,
+//                 pickup_eta, delivery_eta, min_realistic_time } }
+//   · prices are OBJECTS — { amount: 7.5, currency: "GBP" } — not numbers,
+//     and in pounds rather than pence
+//   · price_gross is price_net x 1.2, so net is ex-VAT and gross inc-VAT
+//   · vehicle_type is a numeric code, not a name
+//
 // STILL INFERRED:
-//   · the UNIT of `weight`. Sent here as kilograms, because Gophr's published
+//   · the UNIT of `weight`. Sent as kilograms, because Gophr's published
 //     vehicle table is in kg (pushbike 10kg, cargo bike 100kg). If it wants
-//     grams instead, a 2.1kg cake reads as 2.1 grams and gets a pushbike.
-//     ⚠️ Check this the moment quotes return: a cake and a small parcel must
-//     not come back at the same price, and the response should name a
-//     different vehicle for each.
-//   · the shape of the quote response — `readQuote` reads it defensively and
-//     reports which path it found a price at.
+//     grams, a 2.1kg cake reads as 2.1 grams and gets a pushbike.
+//     ⚠️ The proof is comparative: quote the same journey as a small parcel
+//     and as a cake. A different `vehicle_type` code means size and weight
+//     reached the decision. The same code on both means they did not.
 
 const BASE_URLS = {
   sandbox: "https://api-sandbox.gophr.com/v2-commercial-api",
@@ -254,37 +261,77 @@ export function buildQuoteBody({ destination, parcel, earliestPickup = null }) {
 }
 
 /**
- * Pull a price out of whatever Gophr sends back.
+ * Read a money value, whatever form it arrives in.
  *
- * Written to survive not knowing the response shape: it walks a handful of
- * likely paths and reports which one matched, so the admin page can show
- * "found at data.price_gross" and we can then tighten this to one path.
+ * Gophr sends `{ "amount": 7.5, "currency": "GBP" }` — an object, not a
+ * number, which is what the first working run revealed. Bare numbers and
+ * numeric strings are still accepted so this does not become brittle if a
+ * different endpoint answers differently.
  *
- * Returns { amount, currency, path } or { amount: null } — never throws, and
- * never invents a number.
+ * Returns { amount, currency } or null. Never invents a figure.
  */
-export function readQuote(payload) {
-  const candidates = [
-    ["price_gross"], ["price_net"], ["price"], ["total_price"],
-    ["data", "price_gross"], ["data", "price_net"], ["data", "price"],
-    ["data", "total_price"], ["quote", "price"], ["quote", "price_gross"],
-    ["data", "quote", "price"],
-  ];
-  for (const path of candidates) {
-    let node = payload;
-    let ok = true;
-    for (const key of path) {
-      if (node == null || typeof node !== "object" || !(key in node)) { ok = false; break; }
-      node = node[key];
-    }
-    if (!ok) continue;
-    // Gophr may send pence as an integer or pounds as a string.
-    const amount = typeof node === "string" ? Number(node) : node;
-    if (typeof amount === "number" && Number.isFinite(amount)) {
-      return { amount, currency: payload?.currency || payload?.data?.currency || "GBP", path: path.join(".") };
+export function readAmount(node) {
+  if (node == null) return null;
+  if (typeof node === "number") {
+    return Number.isFinite(node) ? { amount: node, currency: null } : null;
+  }
+  if (typeof node === "string") {
+    const n = Number(node);
+    return Number.isFinite(n) && node.trim() !== "" ? { amount: n, currency: null } : null;
+  }
+  if (typeof node === "object" && "amount" in node) {
+    const raw = node.amount;
+    const n = typeof raw === "string" ? Number(raw) : raw;
+    if (typeof n === "number" && Number.isFinite(n)) {
+      return { amount: n, currency: node.currency || null };
     }
   }
-  return { amount: null, currency: null, path: null };
+  return null;
+}
+
+/**
+ * Everything worth knowing from a quote response.
+ *
+ * Confirmed shape, from a real sandbox quote:
+ *   { data: { job_priority, vehicle_type, price_net: {amount,currency},
+ *             price_gross: {amount,currency}, pickup_eta, delivery_eta,
+ *             min_realistic_time } }
+ *
+ * `price_net` is ex-VAT and `price_gross` is inc-VAT — gross is exactly
+ * net x 1.2 on every journey seen so far.
+ */
+export function readQuote(payload) {
+  const d = payload && typeof payload === "object" && payload.data ? payload.data : payload;
+  const gross = readAmount(d?.price_gross);
+  const net = readAmount(d?.price_net);
+
+  // Fallback for any shape we have not met, so an unexpected response degrades
+  // to "no price" rather than to a wrong one.
+  let fallback = null;
+  if (!gross && !net) {
+    for (const key of ["price", "total_price", "amount"]) {
+      const found = readAmount(d?.[key]);
+      if (found) { fallback = { value: found, path: key }; break; }
+    }
+  }
+
+  const headline = gross || net || fallback?.value || null;
+
+  return {
+    amount: headline ? headline.amount : null,
+    currency: headline?.currency || gross?.currency || net?.currency || null,
+    path: gross ? "data.price_gross" : net ? "data.price_net" : fallback?.path || null,
+    gross,
+    net,
+    // A numeric code. Gophr picks the vehicle itself; the code is the only
+    // proof that size and weight reached the decision.
+    vehicleType: typeof d?.vehicle_type === "number" ? d.vehicle_type : null,
+    pickupEta: d?.pickup_eta || null,
+    deliveryEta: d?.delivery_eta || null,
+    // Gophr's own estimate of the realistic door-to-door time, in minutes.
+    minRealisticMinutes:
+      typeof d?.min_realistic_time === "number" ? d.min_realistic_time : null,
+  };
 }
 
 /** Ask Gophr what a journey would cost. Returns the raw payload as well. */
