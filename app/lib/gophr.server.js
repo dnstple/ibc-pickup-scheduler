@@ -48,24 +48,74 @@ export const PICKUP = {
 };
 
 export function gophrEnv() {
-  const value = (process.env.GOPHR_ENV || "sandbox").toLowerCase();
+  const value = (process.env.GOPHR_ENV || "sandbox").trim().toLowerCase();
   return value === "production" ? "production" : "sandbox";
 }
 
+/**
+ * The key, with surrounding whitespace removed.
+ *
+ * Pasting into a hosting dashboard picks up a trailing newline more often than
+ * anyone admits, and the header then carries it straight to the API, which
+ * rejects it as a different key. Trimming costs nothing and removes a whole
+ * category of "but I copied it correctly".
+ */
+export function gophrKey() {
+  return (process.env.GOPHR_API_KEY || "").trim();
+}
+
 export function gophrConfigured() {
-  return Boolean(process.env.GOPHR_API_KEY);
+  return Boolean(gophrKey());
+}
+
+/**
+ * Work out whether a key belongs to the environment it is being used against,
+ * without knowing or revealing the key itself.
+ *
+ * Gophr's documented example of a sandbox key is
+ * `sand-2a7df6bd-8ed3-48ad-b801-05093a866e66`, so sandbox keys carry a
+ * `sand-` prefix and keys are environment-specific. A production key sent to
+ * the sandbox endpoint gets a 401 that says nothing about why.
+ *
+ * Pure, so it can be tested without any environment at all.
+ */
+export function diagnoseKey(rawKey, environment) {
+  const raw = typeof rawKey === "string" ? rawKey : "";
+  const key = raw.trim();
+  const looksSandbox = key.toLowerCase().startsWith("sand-");
+  const hadWhitespace = raw !== key && raw.length > 0;
+
+  let mismatch = null;
+  if (key) {
+    if (environment === "sandbox" && !looksSandbox) {
+      mismatch = "production-key-on-sandbox";
+    } else if (environment === "production" && looksSandbox) {
+      mismatch = "sandbox-key-on-production";
+    }
+  }
+
+  return {
+    present: Boolean(key),
+    looksSandbox,
+    hadWhitespace,
+    length: key.length,
+    mismatch,
+  };
 }
 
 /**
  * What the admin page is allowed to know about the credentials.
- * Deliberately never includes the key, or any part of it.
+ * Never the key, and never any part of it — only shape and fit.
  */
 export function gophrStatus() {
+  const environment = gophrEnv();
+  const key = diagnoseKey(process.env.GOPHR_API_KEY, environment);
   return {
-    configured: gophrConfigured(),
-    environment: gophrEnv(),
-    baseUrl: BASE_URLS[gophrEnv()],
-    dispatchesRealRiders: gophrEnv() === "production",
+    configured: key.present,
+    environment,
+    baseUrl: BASE_URLS[environment],
+    dispatchesRealRiders: environment === "production",
+    key,
   };
 }
 
@@ -91,7 +141,7 @@ async function call(path, { method = "GET", body, timeoutMs = 8000 } = {}) {
     response = await fetch(url, {
       method,
       headers: {
-        "API-KEY": process.env.GOPHR_API_KEY,
+        "API-KEY": gophrKey(),
         "Content-Type": "application/json",
         Accept: "application/json",
       },

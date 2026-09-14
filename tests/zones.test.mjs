@@ -15,7 +15,13 @@ import {
   zoneForPostcode,
   shopifyPostcodeList,
 } from "../app/lib/zones.js";
-import { parcelFor, readQuote, buildQuoteBody, PICKUP } from "../app/lib/gophr.server.js";
+import {
+  parcelFor,
+  readQuote,
+  buildQuoteBody,
+  diagnoseKey,
+  PICKUP,
+} from "../app/lib/gophr.server.js";
 
 /* ------------------------------------------------------------ outward codes */
 
@@ -184,4 +190,55 @@ test("an unrecognised shape reports no price rather than inventing one", () => {
   assert.equal(readQuote({ price: "not a number" }).amount, null);
   assert.equal(readQuote(null).amount, null);
   assert.equal(readQuote({ price: null }).amount, null);
+});
+
+/* --------------------------------------------------------- key diagnostics */
+// The 401 we hit on the first run said only "You are not authorised". These
+// tests cover the reasons it says that, so the page can name the cause
+// instead of the next person guessing for an afternoon.
+
+test("a sandbox key on the sandbox is fine", () => {
+  const d = diagnoseKey("sand-2a7df6bd-8ed3-48ad-b801-05093a866e66", "sandbox");
+  assert.equal(d.mismatch, null);
+  assert.equal(d.looksSandbox, true);
+  assert.equal(d.present, true);
+});
+
+test("a production key on the sandbox is the classic 401", () => {
+  const d = diagnoseKey("2a7df6bd-8ed3-48ad-b801-05093a866e66", "sandbox");
+  assert.equal(d.mismatch, "production-key-on-sandbox");
+});
+
+test("a sandbox key on production is caught too", () => {
+  const d = diagnoseKey("sand-2a7df6bd-8ed3", "production");
+  assert.equal(d.mismatch, "sandbox-key-on-production");
+});
+
+test("the sandbox prefix is matched regardless of case", () => {
+  assert.equal(diagnoseKey("SAND-abc", "sandbox").looksSandbox, true);
+});
+
+test("whitespace from a paste is trimmed and reported", () => {
+  // A trailing newline picked up from a hosting dashboard is sent verbatim in
+  // the header and rejected as a different key.
+  const d = diagnoseKey("sand-abc123\n", "sandbox");
+  assert.equal(d.hadWhitespace, true);
+  assert.equal(d.length, "sand-abc123".length); // the trimmed length, not the raw one
+  assert.equal(d.mismatch, null);
+});
+
+test("no key at all is not reported as a mismatch", () => {
+  // "Set a key" and "the key is the wrong sort" are different problems and
+  // must not be shown as the same one.
+  for (const empty of ["", "   ", undefined, null]) {
+    const d = diagnoseKey(empty, "sandbox");
+    assert.equal(d.present, false);
+    assert.equal(d.mismatch, null);
+  }
+});
+
+test("the diagnosis never carries the key itself", () => {
+  const secret = "sand-do-not-leak-me";
+  const d = diagnoseKey(secret, "sandbox");
+  assert.equal(JSON.stringify(d).includes("do-not-leak"), false);
 });

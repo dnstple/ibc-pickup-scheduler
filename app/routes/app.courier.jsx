@@ -172,6 +172,60 @@ export default function Courier() {
               </InlineStack>
               <Text as="p" tone="subdued" variant="bodySm">{status.baseUrl}</Text>
 
+              {/* ---- why a 401 happens, answered before you have to ask ---- */}
+              {status.key?.mismatch === "production-key-on-sandbox" && (
+                <Banner tone="critical" title="This key does not belong to the sandbox">
+                  <BlockStack gap="200">
+                    <Text as="p">
+                      Gophr&rsquo;s keys are environment-specific, and sandbox keys begin
+                      with <Text as="span" fontWeight="semibold">sand-</Text>. Yours does
+                      not, so it is a production key being sent to the sandbox endpoint —
+                      which returns 401 without explaining why.
+                    </Text>
+                    <Text as="p" fontWeight="semibold">Two ways out:</Text>
+                    <List>
+                      <List.Item>
+                        Generate a <Text as="span" fontWeight="semibold">sandbox</Text> key
+                        in Gophr&rsquo;s Developer&rsquo;s Hub and replace
+                        GOPHR_API_KEY. If you cannot see an environment option there, ask
+                        Gophr to enable sandbox access — some accounts have it switched off.
+                      </List.Item>
+                      <List.Item>
+                        Or set <Text as="span" fontWeight="semibold">GOPHR_ENV = production</Text>{" "}
+                        and use the key you have. <Text as="span" fontWeight="semibold">Quoting
+                        is free and dispatches nobody</Text>, so this page stays safe — but
+                        the environment badge will turn red, and it should stay red until
+                        the booking code exists.
+                      </List.Item>
+                    </List>
+                  </BlockStack>
+                </Banner>
+              )}
+
+              {status.key?.mismatch === "sandbox-key-on-production" && (
+                <Banner tone="warning" title="A sandbox key is being sent to production">
+                  The key begins with <Text as="span" fontWeight="semibold">sand-</Text>,
+                  which is a sandbox key, but GOPHR_ENV is set to production. Set
+                  GOPHR_ENV back to sandbox.
+                </Banner>
+              )}
+
+              {status.key?.hadWhitespace && (
+                <Banner tone="warning" title="The key had whitespace around it">
+                  A trailing space or newline came along with the paste. It is being
+                  trimmed before the request, so this is handled — but it is worth tidying
+                  in Vercel so the next person is not chasing it.
+                </Banner>
+              )}
+
+              {status.configured && (
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Key check: {status.key.length} characters,{" "}
+                  {status.key.looksSandbox ? "sandbox prefix present" : "no sandbox prefix"}.
+                  The key itself is never read into this page.
+                </Text>
+              )}
+
               {status.dispatchesRealRiders && (
                 <Banner tone="critical" title="This is the live environment">
                   Quotes are free, but anything that creates a job here sends a real rider
@@ -246,8 +300,18 @@ export default function Courier() {
                 </>
               )}
 
-              {data?.results?.some((r) => !r.ok) && (
-                <Banner tone="warning" title="Some quotes failed — this is expected on the first run">
+              {data?.results?.some((r) => !r.ok && r.status === 401) && (
+                <Banner tone="critical" title="401 — the key was rejected, not the request">
+                  <Text as="p">
+                    Nothing is wrong with the request body: it never got that far. This is
+                    authentication. Check the credentials card above — the commonest cause
+                    is a production key being sent to the sandbox.
+                  </Text>
+                </Banner>
+              )}
+
+              {data?.results?.some((r) => !r.ok && r.status && r.status !== 401) && (
+                <Banner tone="warning" title="The key worked — now the request shape needs correcting">
                   <Text as="p">
                     Gophr&rsquo;s reference pages would not render, so the field names in the
                     request are an educated guess. The error above names the field it
