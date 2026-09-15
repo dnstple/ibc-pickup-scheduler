@@ -124,6 +124,18 @@ export const DEFAULT_SAMEDAY = {
   too_late: "Same-day orders close at {cutoff}. Choose a delivery date instead.",
 
   zones: DEFAULT_ZONES,
+
+  /* ========================================================================= */
+  /* ⚠️  LIVE TEST SCAFFOLDING — REMOVE BEFORE HANDING OVER  ⚠️               */
+  /*                                                                           */
+  /* Adds a window to the basket that collects RIGHT NOW, ignoring the lead    */
+  /* time, the cut-off and the end of the day. It exists so a real order can   */
+  /* be placed through the real website and put a real rider on the road       */
+  /* within minutes, rather than in two hours' time.                           */
+  /*                                                                           */
+  /* OFF BY DEFAULT and gated on this one flag, so a customer can never see    */
+  /* it however the theme is published. Grep for LIVE TEST to remove.          */
+  test_now_enabled: false,
 };
 
 /* ------------------------------------------------------------------ postcodes */
@@ -183,6 +195,9 @@ export function normalizeSameday(raw) {
 
   s.enabled = s.enabled === true;
   s.open_window_enabled = s.open_window_enabled !== false;
+  /* ⚠️ LIVE TEST — remove with its block. Explicitly true or it is off; a
+   * truthy string must not arm a tile that dispatches a courier. */
+  s.test_now_enabled = s.test_now_enabled === true;
 
   for (const key of ["lead_minutes", "window_minutes", "min_window_minutes"]) {
     const n = Number(s[key]);
