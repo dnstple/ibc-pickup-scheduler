@@ -236,6 +236,49 @@ export function existingBooking(order) {
   };
 }
 
+/* ------------------------------------------------------------------ phones */
+
+/**
+ * A UK mobile in the form a courier API can text.
+ *
+ * `07873989675` and `+447873989675` are the same number, and Gophr accepted
+ * both without complaint — which is exactly the problem. A validator that
+ * shrugs is not a validator, and the failure this guards against is silent:
+ * the job books, the rider goes out, and the customer simply never gets the
+ * text. Nothing errors. Nobody finds out until somebody complains that the
+ * chocolate arrived unannounced.
+ *
+ * So the national form is converted rather than trusted. E.164 is what the
+ * shop's own number is already set to, so this also stops the two ends of the
+ * same job being spelled two different ways.
+ *
+ * Anything that is not recognisably a UK number is passed through untouched:
+ * a wrong guess at an international number would be worse than leaving it
+ * alone, and Gophr can refuse it on its own terms.
+ */
+export function normalizeMobile(raw) {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return "";
+
+  /* Spaces, brackets and dashes are how people type phone numbers and mean
+   * nothing to a dialler. A leading + is kept; it is the only punctuation
+   * that carries meaning. */
+  const plus = trimmed.startsWith("+");
+  const digits = trimmed.replace(/[^0-9]/g, "");
+  if (!digits) return trimmed;
+
+  if (plus) return `+${digits}`;
+  /* 00 is the other way of writing +. */
+  if (digits.startsWith("00")) return `+${digits.slice(2)}`;
+  /* 447873989675 — already international, just missing its plus. */
+  if (digits.startsWith("44") && digits.length >= 12) return `+${digits}`;
+  /* 07873989675 -> +447873989675. Eleven digits starting 07 is the only
+   * pattern this converts, because it is the only one it can be sure of. */
+  if (digits.startsWith("0") && digits.length === 11) return `+44${digits.slice(1)}`;
+
+  return trimmed;
+}
+
 /* ------------------------------------------------------------------ money */
 
 /** "12.95" | 12.95 | "£12.95" -> 1295, or null. */

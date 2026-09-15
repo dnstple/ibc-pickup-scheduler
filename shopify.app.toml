@@ -15,7 +15,16 @@ client_id = "97c44561f62e59f3612192b5d5c96d48"
 # Adding a scope invalidates the existing access token until the merchant
 # re-approves, so after deploying this, open the app in Shopify admin and accept
 # the new permissions before testing.
-scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_orders"
+#
+# write_merchant_managed_fulfillment_orders lets the courier booking mark a
+# same-day order fulfilled and attach Gophr's tracking link, which is what
+# makes Shopify send the customer its own shipping-confirmation email. Without
+# it the link exists on the order and the customer never sees it.
+#
+# ⚠️ THIS ONE IS NEW AND IT INVALIDATES THE ACCESS TOKEN. After deploying,
+# open the app in Shopify admin and accept the new permission before placing a
+# test order, or every call will fail authentication.
+scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_orders"
 
 [auth]
 redirect_urls = [ "https://ibc-pickup-scheduler.vercel.app/auth/callback" ]

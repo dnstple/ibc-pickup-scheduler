@@ -31,8 +31,10 @@ import {
   bookedAttributes,
   failedAttributes,
   normalizeBooking,
+  normalizeMobile,
 } from "../lib/courier-booking.js";
 import { bookJob, parcelFor, GophrError } from "../lib/gophr.server.js";
+import { fulfilWithTracking } from "../lib/fulfilment.server.js";
 
 /* Everything the decision needs, and nothing else. `customAttributes` is read
  * FRESH rather than taken from the webhook payload: the payload is a snapshot
@@ -144,7 +146,7 @@ function destinationFrom(order) {
     /* The checkout collects a mobile for local delivery — it is a required
      * field on that rate — so this is normally present. The order's own phone
      * is the fallback for an order placed by other means. */
-    mobile: a.phone || order?.phone || "",
+    mobile: normalizeMobile(a.phone || order?.phone || ""),
     email: order?.email || "",
     address1: a.address1 || "",
     address2: a.address2 || "",
@@ -329,6 +331,31 @@ export const action = async ({ request }) => {
       ["same-day", "courier-booked"]
     );
     log(order.name, "booked", result.job?.jobId, "at", verdictForLog?.quotePence, "pence");
+
+    /* STAGE ONE OF TELLING THE CUSTOMER: fulfil the order with the tracker
+     * attached, which makes Shopify send its own shipping-confirmation email
+     * carrying the link. No second sending domain, no extra app, and the
+     * order stops sitting in the admin looking unshipped.
+     *
+     * DELIBERATELY AFTER the attributes are written, and deliberately unable
+     * to fail this webhook. A rider is on the road by this point. If the
+     * fulfillment is refused — the order was already fulfilled by hand, a
+     * scope is missing, Shopify is having a moment — the right outcome is a
+     * booked order with a logged complaint, not a 500 that has Shopify retry
+     * and book a second rider. */
+    try {
+      const fulfilled = await fulfilWithTracking(admin, {
+        orderGid: order.id,
+        trackingUrl: result.job?.trackingUrl || null,
+        notify: true,
+      });
+      if (!fulfilled.ok) {
+        log(order.name, "booked but not fulfilled:", fulfilled.reason, fulfilled.message || "");
+      }
+    } catch (fulfilError) {
+      log(order.name, "booked but fulfilment threw:", fulfilError?.message || fulfilError);
+    }
+
     return new Response();
   } catch (error) {
     const isGophr = error instanceof GophrError;

@@ -99,9 +99,59 @@ function pickupOptions(now = new Date()) {
   ];
 }
 
+/* What the app is ACTUALLY allowed to do, asked of Shopify rather than read
+ * off shopify.app.toml.
+ *
+ * The toml is a request. The grant is a separate thing, and a scope added to
+ * the file does nothing until the merchant accepts it — which, with managed
+ * installation, happens quietly on some app loads and not others. The gap
+ * between "I deployed it" and "it is granted" is invisible, and the symptom
+ * is a fulfilment that fails hours later on a real order.
+ *
+ * So the page asks. `currentAppInstallation` returns the scopes of the app
+ * making the call, which is this one.
+ *
+ * Fails soft: a page that cannot render because a diagnostic failed is worse
+ * than a page with an unknown diagnostic on it. */
+const SCOPES_QUERY = `
+  query CourierScopes {
+    currentAppInstallation {
+      accessScopes { handle }
+    }
+  }
+`;
+
+const NEEDED_SCOPES = [
+  { handle: "read_orders", why: "read the order behind a booking" },
+  { handle: "write_orders", why: "write the booking back onto the order" },
+  {
+    handle: "write_merchant_managed_fulfillment_orders",
+    why: "mark the order fulfilled and send the customer their tracking link",
+  },
+];
+
+async function grantedScopes(admin) {
+  try {
+    const response = await admin.graphql(SCOPES_QUERY);
+    const { data } = await response.json();
+    const handles = (data?.currentAppInstallation?.accessScopes || []).map((s) => s.handle);
+    return { known: true, handles };
+  } catch (error) {
+    return { known: false, handles: [], error: error?.message || String(error) };
+  }
+}
+
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
+  const granted = await grantedScopes(admin);
   return {
+    scopes: {
+      known: granted.known,
+      needed: NEEDED_SCOPES.map((s) => ({
+        ...s,
+        granted: granted.handles.includes(s.handle),
+      })),
+    },
     status: gophrStatus(),
     pickups: pickupOptions().map(({ value, label, iso }) => ({ value, label, iso })),
     journeys: TEST_JOURNEYS.map((j) => ({
@@ -353,7 +403,7 @@ async function confirmTestJob(jobId, rawBody) {
 const money = (m) => (m ? `£${m.amount.toFixed(2)}` : "—");
 
 export default function Courier() {
-  const { status, journeys, zones, testZone, pickups } = useLoaderData();
+  const { status, journeys, zones, testZone, pickups, scopes } = useLoaderData();
   const fetcher = useFetcher();
   const [showRaw, setShowRaw] = useState(false);
   const [when, setWhen] = useState("now");
@@ -608,6 +658,64 @@ export default function Courier() {
               <Text as="p" tone="subdued" variant="bodySm">
                 Request shape: {SHAPE_VERSION}
               </Text>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        {/* ---------------------------------------------------- permissions */}
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h2" variant="headingMd">Permissions</Text>
+                <Badge
+                  tone={
+                    !scopes?.known
+                      ? "attention"
+                      : scopes.needed.every((s) => s.granted)
+                        ? "success"
+                        : "critical"
+                  }
+                >
+                  {!scopes?.known
+                    ? "could not check"
+                    : scopes.needed.every((s) => s.granted)
+                      ? "all granted"
+                      : "one is missing"}
+                </Badge>
+              </InlineStack>
+
+              <Text as="p" tone="subdued" variant="bodySm">
+                Asked of Shopify, not read off the config file. A scope listed in
+                shopify.app.toml is a request; the grant is a separate thing, and the
+                gap between them is invisible until a real order fails.
+              </Text>
+
+              <BlockStack gap="150">
+                {(scopes?.needed || []).map((s) => (
+                  <InlineStack key={s.handle} gap="200" blockAlign="center" wrap={false}>
+                    <Badge tone={s.granted ? "success" : "critical"}>
+                      {s.granted ? "granted" : "missing"}
+                    </Badge>
+                    <BlockStack gap="0">
+                      <Text as="span" variant="bodySm" fontWeight="semibold">{s.handle}</Text>
+                      <Text as="span" variant="bodySm" tone="subdued">Lets the app {s.why}.</Text>
+                    </BlockStack>
+                  </InlineStack>
+                ))}
+              </BlockStack>
+
+              {scopes?.known && !scopes.needed.every((s) => s.granted) && (
+                <Banner tone="critical" title="Shopify has not granted everything yet">
+                  <Text as="p">
+                    Run <Text as="span" fontWeight="semibold">shopify app deploy</Text>, then
+                    close this app and open it again from{" "}
+                    <Text as="span" fontWeight="semibold">Apps</Text> in the admin. Managed
+                    installation asks for new permissions on an app load, so the fix is
+                    usually to leave and come back rather than to find a button.
+                  </Text>
+                </Banner>
+              )}
             </BlockStack>
           </Card>
         </Layout.Section>

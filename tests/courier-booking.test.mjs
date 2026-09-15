@@ -23,6 +23,7 @@ import {
   courierPlan,
   retryVerdict,
   gophrInstant,
+  normalizeMobile,
 } from "../app/lib/courier-booking.js";
 
 /* An order as Shopify's GraphQL returns it, with only the parts that matter. */
@@ -635,4 +636,39 @@ test("no milliseconds survive, whatever the input", () => {
     const d = new Date(Date.UTC(2026, 8, 15, 14, 30, 0, ms));
     assert.equal(gophrInstant(d).includes("."), false, `ms=${ms}`);
   }
+});
+
+/* ------------------------------------------------------------------ phones */
+
+test("A UK MOBILE REACHES GOPHR IN ONE SPELLING, NOT TWO", () => {
+  /* The shop's number is set as +447873989675; a customer's arrives from the
+   * Shopify address as 07873989675. Gophr accepted both without complaint,
+   * which is worse than refusing one: the job books, the rider goes, and the
+   * text silently never arrives. */
+  assert.equal(normalizeMobile("07873989675"), "+447873989675");
+  assert.equal(normalizeMobile("+447873989675"), "+447873989675");
+  assert.equal(normalizeMobile("00447873989675"), "+447873989675");
+  assert.equal(normalizeMobile("447873989675"), "+447873989675");
+});
+
+test("how people actually type numbers", () => {
+  assert.equal(normalizeMobile("07873 989675"), "+447873989675");
+  assert.equal(normalizeMobile("(07873) 989-675"), "+447873989675");
+  assert.equal(normalizeMobile("  +44 7873 989675  "), "+447873989675");
+});
+
+test("anything it cannot be sure of is left alone, not guessed at", () => {
+  /* A wrong guess at an international number is worse than passing it through
+   * and letting Gophr refuse it on its own terms. */
+  assert.equal(normalizeMobile("+33612345678"), "+33612345678");
+  assert.equal(normalizeMobile("12345"), "12345");
+  assert.equal(normalizeMobile(""), "");
+  assert.equal(normalizeMobile(null), "");
+  assert.equal(normalizeMobile(undefined), "");
+});
+
+test("a London landline is not mangled into a mobile", () => {
+  /* 02071234567 is eleven digits starting 0, so it converts — correctly, to
+   * +442071234567. The rule is about UK numbers, not about mobiles. */
+  assert.equal(normalizeMobile("02071234567"), "+442071234567");
 });
