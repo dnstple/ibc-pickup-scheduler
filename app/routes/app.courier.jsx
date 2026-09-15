@@ -31,9 +31,13 @@ import {
 import { authenticate } from "../shopify.server";
 import {
   gophrStatus,
+  gophrEnv,
   quote,
   parcelFor,
   buildQuoteBody,
+  buildJobBody,
+  bookJob,
+  pickupMobile,
   GophrError,
 } from "../lib/gophr.server";
 import { ZONES, TEST_ZONE, zoneForPostcode, shopifyPostcodeList } from "../lib/zones";
@@ -118,6 +122,9 @@ export const action = async ({ request }) => {
   const perishable = form.get("perishable") === "true";
   const when = form.get("when") || "now";
 
+  if (form.get("intent") === "book") return bookTestJob({ perishable, when });
+
+
   // Recomputed here rather than trusted from the form. The client has no
   // business deciding what instant the server asks a courier about.
   const chosen = pickupOptions().find((o) => o.value === when) || { iso: null, label: "Right now" };
@@ -172,6 +179,101 @@ export const action = async ({ request }) => {
   };
 };
 
+/**
+ * ONE booking, against the sandbox, to discover the request shape.
+ *
+ * The quote shape took four round trips to establish, because every one of
+ * them was a guess checked against a real response. This is the same
+ * instrument pointed at `POST /job`: send the best inference, read what Gophr
+ * says it wanted, change it to that. A 422 here is the tool working.
+ *
+ * IT REFUSES TO RUN AGAINST PRODUCTION, and refuses rather than warns. A
+ * button whose whole purpose is to send malformed requests until one sticks
+ * has no business being one careless environment variable away from a real
+ * rider arriving at 29 Rathbone Place.
+ */
+async function bookTestJob({ perishable, when }) {
+  const environment = gophrEnv();
+  if (environment !== "sandbox") {
+    return {
+      booking: {
+        ok: false,
+        refused: true,
+        message:
+          "This bench only runs against the sandbox. GOPHR_ENV is set to production, " +
+          "and a test booking there dispatches a real rider to the shop.",
+      },
+    };
+  }
+
+  const chosen = pickupOptions().find((o) => o.value === when) || { iso: null, label: "Right now" };
+
+  /* The shop's own address as the destination. If the shape is wrong the
+   * request fails, and if it is right a sandbox rider is dispatched to nowhere
+   * — but a real one would come here, which is the least surprising place for
+   * a test parcel to be sent. */
+  const destination = {
+    name: "Test Recipient",
+    mobile: pickupMobile(),
+    address1: "29 Rathbone Place",
+    city: "London",
+    postcode: "W1T 1JG",
+    country_code: "GB",
+  };
+
+  const options = {
+    destination,
+    parcel: parcelFor({
+      grams: perishable ? 2100 : 500,
+      perishable,
+      id: `ibc-booktest-${Date.now()}`,
+    }),
+    earliestPickup: chosen.iso,
+    externalId: `IBC-BENCH-${Date.now()}`,
+    reference: "Test booking from the Courier bench",
+    dropoffNotes: "TEST BOOKING — not a real order.",
+  };
+
+  if (!pickupMobile()) {
+    return {
+      booking: {
+        ok: false,
+        message:
+          "GOPHR_PICKUP_MOBILE is not set. Gophr needs a number for the collection, " +
+          "and a job cannot be created without one. Add it in Vercel and redeploy.",
+        request: buildJobBody(options),
+      },
+    };
+  }
+
+  try {
+    const result = await bookJob(options);
+    return {
+      booking: {
+        ok: true,
+        when: chosen.label,
+        job: result.job,
+        request: result.request,
+        response: result.response,
+      },
+    };
+  } catch (error) {
+    return {
+      booking: {
+        ok: false,
+        when: chosen.label,
+        message: error.message,
+        status: error instanceof GophrError ? error.status : undefined,
+        body: error instanceof GophrError ? error.body : undefined,
+        /* The request, on the failure path, for the same reason the quote
+         * bench shows it: without it a stale deploy and a wrong payload look
+         * identical. */
+        request: error?.request || buildJobBody(options),
+      },
+    };
+  }
+}
+
 const money = (m) => (m ? `£${m.amount.toFixed(2)}` : "—");
 
 export default function Courier() {
@@ -181,6 +283,11 @@ export default function Courier() {
   const [when, setWhen] = useState("now");
   const running = fetcher.state !== "idle";
   const data = fetcher.data;
+  /* The booking bench and the quote bench share one fetcher, so each reads
+   * only its own half of the answer. Without this, a booking result would
+   * leave the quote table rendering the previous run's rows as if they were
+   * fresh. */
+  const booking = fetcher.data?.booking || null;
 
   const run = (perishable) => {
     const body = new FormData();
@@ -417,6 +524,92 @@ export default function Courier() {
               <Text as="p" tone="subdued" variant="bodySm">
                 Request shape: {SHAPE_VERSION}
               </Text>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        {/* ---------------------------------------------------- book a job */}
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h2" variant="headingMd">Book a test job</Text>
+                <Badge tone={status.environment === "sandbox" ? "success" : "critical"}>
+                  {status.environment === "sandbox" ? "sandbox — safe" : "PRODUCTION — refused"}
+                </Badge>
+              </InlineStack>
+
+              <Text as="p">
+                A quote is a question; this is the booking. The quote request shape took
+                four attempts to get right, and every one of them was settled by sending
+                something and reading the answer. This does the same for{" "}
+                <Text as="span" fontWeight="semibold">POST /job</Text>, which has never
+                been called. <Text as="span" fontWeight="semibold">Expect the first
+                attempt to fail with a list of field names</Text> — that list is the
+                point, and it is what the webhook will be corrected against.
+              </Text>
+
+              <Text as="p" tone="subdued" variant="bodySm">
+                It books from the shop to the shop, using the day and time selected
+                above, and refuses outright if GOPHR_ENV is not sandbox.
+              </Text>
+
+              <InlineStack gap="300">
+                <Button
+                  onClick={() =>
+                    fetcher.submit(
+                      { intent: "book", perishable: "false", when },
+                      { method: "POST" }
+                    )
+                  }
+                  loading={fetcher.state !== "idle"}
+                  disabled={status.environment !== "sandbox" || !status.configured}
+                >
+                  Send one test booking
+                </Button>
+              </InlineStack>
+
+              {booking && booking.ok && (
+                <Banner tone="success" title="Gophr accepted the booking">
+                  <BlockStack gap="200">
+                    <Text as="p">
+                      Job {booking.job?.jobId || "(no id found in the response)"}
+                      {booking.job?.deliveryId ? ` · delivery ${booking.job.deliveryId}` : ""}
+                      {booking.job?.status ? ` · ${booking.job.status}` : ""}
+                    </Text>
+                    {!booking.job?.jobId && (
+                      <Text as="p">
+                        No job id could be read from the response. The shape below needs
+                        to go into readJob() before the webhook can be trusted — without
+                        an id there is nothing to cancel and nothing to stop a retry
+                        booking a second rider.
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Banner>
+              )}
+
+              {booking && !booking.ok && (
+                <Banner tone={booking.refused ? "warning" : "critical"}
+                        title={booking.refused ? "Refused" : `Booking failed${booking.status ? ` — ${booking.status}` : ""}`}>
+                  <Text as="p">{booking.message}</Text>
+                </Banner>
+              )}
+
+              {booking && (
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+                  <BlockStack gap="200">
+                    <Text as="p" fontWeight="semibold" variant="bodySm">What was sent</Text>
+                    <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 11 }}>
+                      {JSON.stringify(booking.request, null, 2)}
+                    </pre>
+                    <Text as="p" fontWeight="semibold" variant="bodySm">What came back</Text>
+                    <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 11 }}>
+                      {JSON.stringify(booking.body ?? booking.response ?? null, null, 2)}
+                    </pre>
+                  </BlockStack>
+                </Box>
+              )}
             </BlockStack>
           </Card>
         </Layout.Section>

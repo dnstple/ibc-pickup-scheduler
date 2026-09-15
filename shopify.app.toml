@@ -27,6 +27,17 @@ api_version = "2026-10"
   uri = "/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
 
+  # Same-day orders book a courier the moment they are paid for. Handled by
+  # app/routes/webhooks.orders.paid.jsx, which ignores every order that is not
+  # marked same-day.
+  #
+  # NO NEW SCOPES. read_orders and write_orders are already granted above, so
+  # this does not invalidate the access token and the merchant is not asked to
+  # re-approve anything.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/paid"
+  topics = [ "orders/paid" ]
+
 [app_proxy]
 url = "https://ibc-pickup-scheduler.vercel.app/proxy"
 prefix = "apps"

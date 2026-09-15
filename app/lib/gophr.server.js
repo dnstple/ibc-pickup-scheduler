@@ -342,3 +342,166 @@ export async function quote({ destination, parcel, earliestPickup = null }) {
 }
 
 export { GophrError, BASE_URLS };
+
+/* ==================================================================== */
+/* BOOKING A JOB                                                         */
+/*                                                                       */
+/* ⚠️ THE REQUEST SHAPE BELOW IS INFERRED, NOT PROVEN.                   */
+/*                                                                       */
+/* Everything above this line was settled by real requests: four round   */
+/* trips established that `/quotes` wants flat prefixed address fields   */
+/* but BARE parcel dimensions, `parcels` on both ends, and prices read   */
+/* back as objects rather than numbers. None of that was in the docs.    */
+/*                                                                       */
+/* `POST /job` has had no such round trip yet. What is known:            */
+/*   - the path is /job (singular), from the published endpoint list     */
+/*   - creating a delivery separately needs pickup_person_name and       */
+/*     pickup_mobile_number, which quotes never asked for — so a job     */
+/*     almost certainly needs contacts at both ends                      */
+/*   - deliveries carry an `external_id`, which Gophr echoes back on its */
+/*     status webhooks, so it is the natural idempotency handle          */
+/*                                                                       */
+/* THE FIRST CALL WILL PROBABLY 422 WITH A LIST OF FIELD NAMES. That is  */
+/* the intended outcome, not a failure: it is how the quote shape was    */
+/* found. `bookJob` therefore returns the request alongside any error,   */
+/* because the one time that was left out, a deploy that had not taken   */
+/* effect looked exactly like a payload bug and cost a round trip.       */
+/*                                                                       */
+/* Do not "tidy" this by guessing more fields. Send it, read what Gophr  */
+/* says it wants, change it to that.                                     */
+
+/**
+ * The shop's own phone number, which Gophr needs for the collection.
+ *
+ * An env var rather than a constant because it is an operational detail that
+ * differs between the sandbox and the real shop, and rather than a settings
+ * field because a missing phone must stop a booking, not produce a form the
+ * shop can save while empty.
+ */
+export function pickupMobile() {
+  return (process.env.GOPHR_PICKUP_MOBILE || "").trim();
+}
+
+/**
+ * Build the job request.
+ *
+ * `externalId` is the order — it is what ties a Gophr status webhook back to
+ * something in Shopify, and it is the only thing standing between a retried
+ * Shopify webhook and a second rider if Gophr enforces uniqueness on it.
+ */
+export function buildJobBody({
+  destination,
+  parcel,
+  earliestPickup = null,
+  externalId,
+  reference = null,
+  pickupNotes = null,
+  dropoffNotes = null,
+}) {
+  const pickup = {
+    pickup_address1: PICKUP.address1,
+    pickup_city: PICKUP.city,
+    pickup_postcode: PICKUP.postcode,
+    pickup_country_code: PICKUP.country_code,
+    pickup_person_name: PICKUP.name,
+    pickup_mobile_number: pickupMobile(),
+    parcels: [parcel],
+  };
+  if (earliestPickup) pickup.earliest_pickup_time = earliestPickup;
+  if (pickupNotes) pickup.pickup_instructions = String(pickupNotes);
+
+  const dropoff = {
+    dropoff_address1: destination.address1 || "",
+    dropoff_city: destination.city || "London",
+    dropoff_postcode: destination.postcode,
+    dropoff_country_code: destination.country_code || "GB",
+    dropoff_person_name: destination.name || "",
+    dropoff_mobile_number: destination.mobile || "",
+    parcels: [parcel],
+    external_id: String(externalId || ""),
+  };
+  if (destination.address2) dropoff.dropoff_address2 = String(destination.address2);
+  if (destination.email) dropoff.dropoff_email = String(destination.email);
+  if (dropoffNotes) dropoff.dropoff_instructions = String(dropoffNotes);
+
+  const body = { pickups: [pickup], dropoffs: [dropoff] };
+  if (reference) body.reference = String(reference);
+  return body;
+}
+
+/**
+ * Everything worth knowing from a job response.
+ *
+ * Written defensively for the same reason readQuote was: the shape is not
+ * confirmed, and a booking that half-reads its own confirmation is worse than
+ * one that reports nothing. Every field is null when absent — nothing here
+ * invents an id.
+ */
+export function readJob(payload) {
+  const d = payload && typeof payload === "object" && payload.data ? payload.data : payload;
+  if (!d || typeof d !== "object") return { jobId: null, deliveryId: null };
+
+  const firstDelivery = Array.isArray(d.deliveries) && d.deliveries.length
+    ? d.deliveries[0]
+    : null;
+
+  const pick = (...names) => {
+    for (const source of [d, firstDelivery]) {
+      if (!source) continue;
+      for (const name of names) {
+        const value = source[name];
+        if (value !== null && value !== undefined && value !== "") return String(value);
+      }
+    }
+    return null;
+  };
+
+  return {
+    jobId: pick("job_id", "id", "public_job_id"),
+    deliveryId: pick("delivery_id"),
+    trackingUrl: pick("tracking_url", "public_tracking_url", "url"),
+    status: pick("status", "job_status"),
+    price: readQuote(payload),
+  };
+}
+
+/**
+ * Book a rider.
+ *
+ * Returns { request, response, job } on success. On failure it throws a
+ * GophrError carrying `request` as well as Gophr's own answer, so a 422 can
+ * be read against exactly what was sent.
+ */
+export async function bookJob(options) {
+  const body = buildJobBody(options);
+
+  if (!pickupMobile()) {
+    throw new GophrError(
+      "GOPHR_PICKUP_MOBILE is not set, and Gophr needs a number for the collection.",
+      { request: body }
+    );
+  }
+
+  let payload;
+  try {
+    payload = await call("/job", { method: "POST", body, timeoutMs: 12000 });
+  } catch (error) {
+    if (error instanceof GophrError) {
+      error.request = body;
+      throw error;
+    }
+    throw error;
+  }
+
+  return { request: body, response: payload, job: readJob(payload) };
+}
+
+/** Call off a rider. Used when a booking succeeded but the order was cancelled. */
+export async function cancelJob(jobId, reason = "Order cancelled") {
+  if (!jobId) throw new GophrError("No job id to cancel.");
+  const payload = await call(`/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+    body: { reason: String(reason) },
+  });
+  return payload;
+}

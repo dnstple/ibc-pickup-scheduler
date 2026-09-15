@@ -9,6 +9,7 @@
 
 import { timeToMinutes, addDays, dateLabel } from "./timezone.js";
 import { DEFAULT_SAMEDAY, normalizeSameday, validateSameday } from "./sameday.js";
+import { DEFAULT_BOOKING, normalizeBooking, validateBooking } from "./courier-booking.js";
 
 // Sunday is 0 through Saturday is 6, matching JavaScript's getDay() and the
 // theme's data-delivery-closed-days attribute. Do not renumber this: the
@@ -47,6 +48,12 @@ export const DEFAULT_DELIVERY = {
   // Nested here rather than beside `delivery` because it IS a delivery speed,
   // and because the basket shows all three in one tile.
   sameday: DEFAULT_SAMEDAY,
+
+  // What happens AFTER a same-day order is paid for: whether a rider is
+  // booked automatically, and the price above which the shop is asked first.
+  // Separate from `sameday` because that block is about what the customer is
+  // offered and this one is about what the shop spends.
+  booking: DEFAULT_BOOKING,
 };
 
 export function normalizeDelivery(raw) {
@@ -71,6 +78,7 @@ export function normalizeDelivery(raw) {
 
   d.blackout_dates = Array.isArray(d.blackout_dates) ? d.blackout_dates : [];
   d.sameday = normalizeSameday(d.sameday);
+  d.booking = normalizeBooking(d.booking);
 
   return d;
 }
@@ -86,6 +94,7 @@ export function validateDelivery(d) {
   }
 
   Object.assign(errors, validateSameday(d.sameday));
+  Object.assign(errors, validateBooking(d.booking));
 
   const lead = Number(d.lead_days);
   if (!Number.isInteger(lead) || lead < 0 || lead > 30) {
