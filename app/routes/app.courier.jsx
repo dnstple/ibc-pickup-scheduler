@@ -39,6 +39,7 @@ import {
   buildJobBody,
   createJob,
   confirmJob,
+  progressDelivery,
   CONFIRM_BODY,
   pickupMobile,
   GophrError,
@@ -180,6 +181,9 @@ export const action = async ({ request }) => {
   if (intent === "confirm") {
     return confirmTestJob(form.get("jobId"), form.get("confirmBody"));
   }
+  if (intent === "progress") {
+    return progressTestJob(form.get("jobId"), form.get("deliveryId"));
+  }
 
 
   // Recomputed here rather than trusted from the form. The client has no
@@ -235,6 +239,52 @@ export const action = async ({ request }) => {
     ranAt: new Date().toISOString(),
   };
 };
+
+/**
+ * Push the sandbox delivery one status further, and let the webhook fly.
+ *
+ * This is how the status endpoint gets tested without a rider: each press
+ * advances the job and makes Gophr POST to /gophr/status, which is what
+ * fulfils the Shopify order and emails the customer their tracking link.
+ */
+async function progressTestJob(jobId, deliveryId) {
+  const refused = refuseOutsideSandbox();
+  if (refused) return refused;
+
+  if (!jobId || !deliveryId) {
+    return {
+      booking: {
+        ok: false,
+        step: "progress",
+        message: "A job id and a delivery id are both needed. Create a draft first.",
+      },
+    };
+  }
+
+  try {
+    const result = await progressDelivery(jobId, deliveryId);
+    return {
+      booking: {
+        ok: true,
+        step: "progress",
+        job: result.job,
+        request: result.request,
+        response: result.response,
+      },
+    };
+  } catch (error) {
+    return {
+      booking: {
+        ok: false,
+        step: "progress",
+        message: error.message,
+        status: error instanceof GophrError ? error.status : undefined,
+        body: error instanceof GophrError ? error.body : undefined,
+        request: error?.request || { jobId, deliveryId },
+      },
+    };
+  }
+}
 
 /* The sandbox guard, spelled once. It REFUSES rather than warns: a bench whose
  * whole purpose is to send half-understood requests until one sticks has no
@@ -417,10 +467,12 @@ export default function Courier() {
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
   const [draftId, setDraftId] = useState("");
+  const [deliveryId, setDeliveryId] = useState("");
   const [confirmBody, setConfirmBody] = useState('{"is_confirmed":1}');
   if (booking?.step === "draft" && booking.ok && booking.job?.jobId &&
       booking.job.jobId !== draftId) {
     setDraftId(booking.job.jobId);
+    setDeliveryId(booking.job.deliveryId || "");
   }
 
   const run = (perishable) => {
@@ -816,13 +868,57 @@ export default function Courier() {
                 </InlineStack>
               </BlockStack>
 
+              {/* ---- step three ---- */}
+              <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">3 · Walk it through its statuses</Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Gophr&rsquo;s own testing hook. Each press advances the delivery one
+                  step and fires the status webhook at{" "}
+                  <Text as="span" fontWeight="semibold">/gophr/status</Text>, which is what
+                  fulfils the Shopify order and emails the customer their tracking link.
+                  It is the only way to test that half without a rider actually crossing
+                  London. There is no way to jump to a chosen status, so reaching
+                  &ldquo;delivered&rdquo; means pressing it a few times.
+                </Text>
+                <TextField
+                  label="Delivery id"
+                  value={deliveryId}
+                  onChange={setDeliveryId}
+                  autoComplete="off"
+                  helpText="Filled in automatically with the draft. Not the same as the job id."
+                />
+                <InlineStack gap="300">
+                  <Button
+                    onClick={() =>
+                      fetcher.submit(
+                        { intent: "progress", jobId: draftId, deliveryId },
+                        { method: "POST" }
+                      )
+                    }
+                    loading={running}
+                    disabled={
+                      status.environment !== "sandbox" ||
+                      !status.configured ||
+                      !draftId ||
+                      !deliveryId
+                    }
+                  >
+                    Advance one status
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+
               {/* ---- what happened ---- */}
               {booking && booking.ok && (
                 <Banner
                   tone="success"
-                  title={booking.step === "draft"
-                    ? "Draft created — nothing dispatched"
-                    : "Confirmed — this one is real"}
+                  title={
+                    booking.step === "draft"
+                      ? "Draft created — nothing dispatched"
+                      : booking.step === "progress"
+                        ? `Advanced${booking.job?.status ? ` to ${booking.job.status}` : ""} — the webhook should have fired`
+                        : "Confirmed — this one is real"
+                  }
                 >
                   <BlockStack gap="200">
                     <Text as="p">
@@ -855,7 +951,13 @@ export default function Courier() {
                   title={
                     booking.refused
                       ? "Refused"
-                      : `${booking.step === "confirm" ? "Confirm" : "Draft"} failed${booking.status ? ` — ${booking.status}` : ""}`
+                      : `${
+                          booking.step === "confirm"
+                            ? "Confirm"
+                            : booking.step === "progress"
+                              ? "Advance"
+                              : "Draft"
+                        } failed${booking.status ? ` — ${booking.status}` : ""}`
                   }
                 >
                   <Text as="p">{booking.message}</Text>

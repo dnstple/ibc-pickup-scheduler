@@ -620,6 +620,40 @@ export async function bookJob(options, { approve = null, confirmBody } = {}) {
   return { draft, confirmed, refused: null, job: confirmed.job || draft.job };
 }
 
+/**
+ * Sandbox only: push a delivery to its next status and fire the webhook.
+ *
+ * Gophr's own testing hook —
+ *   POST /jobs/{job_id}/deliveries/{delivery_id}/progress
+ * "Hitting this endpoint will progress the delivery to the next status and
+ * cause the status update webhook to be fired."
+ *
+ * This is the only way to exercise the status endpoint without a real rider
+ * carrying a real parcel across London, so it is what proves that half of the
+ * integration. Each call advances one step; there is no way to jump to a
+ * chosen status, so getting to "delivered" means pressing it a few times.
+ *
+ * NOT GUARDED HERE. The guard belongs at the call site, where the environment
+ * is already being checked for the other two buttons — a library function
+ * that sometimes refuses is harder to reason about than one that always does
+ * what it says.
+ */
+export async function progressDelivery(jobId, deliveryId, body = {}) {
+  if (!jobId || !deliveryId) {
+    throw new GophrError("Both a job id and a delivery id are needed to progress a delivery.");
+  }
+  const path = `/jobs/${encodeURIComponent(jobId)}/deliveries/${encodeURIComponent(deliveryId)}/progress`;
+
+  let payload;
+  try {
+    payload = await call(path, { method: "POST", body, timeoutMs: 12000 });
+  } catch (error) {
+    if (error instanceof GophrError) error.request = { path, body };
+    throw error;
+  }
+  return { request: { path, body }, response: payload, job: readJob(payload) };
+}
+
 /** Call off a rider. Used when a booking succeeded but the order was cancelled. */
 export async function cancelJob(jobId, reason = "Order cancelled") {
   if (!jobId) throw new GophrError("No job id to cancel.");
