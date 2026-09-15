@@ -39,6 +39,7 @@ import {
   buildJobBody,
   createJob,
   confirmJob,
+  cancelJob,
   progressDelivery,
   CONFIRM_BODY,
   pickupMobile,
@@ -177,9 +178,11 @@ export const action = async ({ request }) => {
   const when = form.get("when") || "now";
 
   const intent = form.get("intent");
-  if (intent === "draft") return draftTestJob({ perishable, when });
+  const armed = isArmed(form);   /* ⚠️ LIVE TEST — delete with its block */
+  if (intent === "cancel") return cancelTestJob(form.get("jobId"));
+  if (intent === "draft") return draftTestJob({ perishable, when, armed });
   if (intent === "confirm") {
-    return confirmTestJob(form.get("jobId"), form.get("confirmBody"));
+    return confirmTestJob(form.get("jobId"), form.get("confirmBody"), armed);
   }
   if (intent === "progress") {
     return progressTestJob(form.get("jobId"), form.get("deliveryId"));
@@ -286,12 +289,60 @@ async function progressTestJob(jobId, deliveryId) {
   }
 }
 
+/* ========================================================================= */
+/* ⚠️  LIVE TEST BLOCK — DELETE THIS WHOLE SECTION BEFORE HANDING OVER  ⚠️   */
+/*                                                                           */
+/* Everything between this fence and the matching END fence exists so the    */
+/* shop can dispatch ONE real rider to Rathbone Place, hand them nothing and */
+/* say it was a test. It is scaffolding. It books real jobs with real money  */
+/* against the live account, and it has no business surviving into a version */
+/* anybody else runs.                                                        */
+/*                                                                           */
+/* TO REMOVE: delete to the END fence, delete the matching fence in the JSX  */
+/* below, and delete `armed` from the two guards. Nothing else refers to it. */
+/*                                                                           */
+/* WHY IT IS ARMED BY TYPING RATHER THAN BY A CHECKBOX. A checkbox is one    */
+/* stray click from a rider on a bike. A phrase somebody has to type out in  */
+/* full cannot be hit by accident, cannot be left ticked from yesterday, and */
+/* is checked ON THE SERVER — a disabled button is a suggestion, not a       */
+/* guard. */
+const ARMING_PHRASE = "BOOK A REAL RIDER";
+
+function isArmed(form) {
+  return String(form.get("liveConfirm") || "").trim() === ARMING_PHRASE;
+}
+
+/** Call off a job. Allowed in every environment — stopping is never the risk. */
+async function cancelTestJob(jobId) {
+  if (!jobId) {
+    return { booking: { ok: false, step: "cancel", message: "No job id to cancel." } };
+  }
+  try {
+    const response = await cancelJob(jobId, "Test booking — cancelled from the bench");
+    return { booking: { ok: true, step: "cancel", response, request: { jobId } } };
+  } catch (error) {
+    return {
+      booking: {
+        ok: false,
+        step: "cancel",
+        message: error.message,
+        status: error instanceof GophrError ? error.status : undefined,
+        body: error instanceof GophrError ? error.body : undefined,
+        request: { jobId },
+      },
+    };
+  }
+}
+/* ==== END LIVE TEST BLOCK ================================================ */
+
 /* The sandbox guard, spelled once. It REFUSES rather than warns: a bench whose
  * whole purpose is to send half-understood requests until one sticks has no
  * business being one careless environment variable away from a real rider
  * arriving at Rathbone Place. */
-function refuseOutsideSandbox() {
+function refuseOutsideSandbox(armed = false) {
   if (gophrEnv() === "sandbox") return null;
+  /* ⚠️ LIVE TEST: the only way past this guard. Delete with its block. */
+  if (armed) return null;
   return {
     booking: {
       ok: false,
@@ -312,8 +363,8 @@ function refuseOutsideSandbox() {
  * single booking button: the draft's response is the thing we need to read,
  * and reading it should not require dispatching anybody.
  */
-async function draftTestJob({ perishable, when }) {
-  const refused = refuseOutsideSandbox();
+async function draftTestJob({ perishable, when, armed = false }) {
+  const refused = refuseOutsideSandbox(armed);
   if (refused) return refused;
 
   const chosen = pickupOptions().find((o) => o.value === when) || { iso: null, label: "Right now" };
@@ -331,14 +382,30 @@ async function draftTestJob({ perishable, when }) {
    * Bow Street is about a mile away: inside Zone A, a genuine journey, and
    * the same destination the quote bench already uses, so a booking and a
    * quote can be compared like with like. */
-  const destination = {
-    name: "Test Recipient",
-    mobile: pickupMobile(),
-    address1: "Bow Street",
-    city: "London",
-    postcode: "WC2E 9DD",
-    country_code: "GB",
-  };
+  /* Covent Garden in sandbox — a real journey, and nobody is waiting at the
+   * other end because nobody is dispatched.
+   *
+   * ⚠️ LIVE TEST: in production the drop is the shop's OWN neighbour postcode
+   * rather than a stranger's doorstep, so a rider who is told "this was a
+   * test" has not already ridden a mile the wrong way. Delete with the block. */
+  const live = gophrEnv() !== "sandbox";
+  const destination = live
+    ? {
+        name: "TEST — hand the rider nothing",
+        mobile: pickupMobile(),
+        address1: "Charlotte Street",
+        city: "London",
+        postcode: "W1T 1RR",
+        country_code: "GB",
+      }
+    : {
+        name: "Test Recipient",
+        mobile: pickupMobile(),
+        address1: "Bow Street",
+        city: "London",
+        postcode: "WC2E 9DD",
+        country_code: "GB",
+      };
 
   const options = {
     destination,
@@ -349,8 +416,9 @@ async function draftTestJob({ perishable, when }) {
     }),
     earliestPickup: chosen.iso,
     externalId: `IBC-BENCH-${Date.now()}`,
-    reference: "Test booking from the Courier bench",
-    dropoffNotes: "TEST BOOKING — not a real order.",
+    reference: live ? "TEST — NOT A REAL ORDER" : "Test booking from the Courier bench",
+    dropoffNotes: "TEST BOOKING — NOT A REAL ORDER. Nothing to collect.",
+    pickupNotes: "TEST BOOKING — the shop will hand you nothing. Please cancel.",
   };
 
   if (!pickupMobile()) {
@@ -401,8 +469,8 @@ async function draftTestJob({ perishable, when }) {
  * but the body is not, and a wrong guess should cost a click rather than a
  * Vercel deploy and ten minutes. So it is a text box.
  */
-async function confirmTestJob(jobId, rawBody) {
-  const refused = refuseOutsideSandbox();
+async function confirmTestJob(jobId, rawBody, armed = false) {
+  const refused = refuseOutsideSandbox(armed);
   if (refused) return refused;
 
   if (!jobId) {
@@ -469,6 +537,10 @@ export default function Courier() {
   const [draftId, setDraftId] = useState("");
   const [deliveryId, setDeliveryId] = useState("");
   const [confirmBody, setConfirmBody] = useState('{"is_confirmed":1}');
+  /* ⚠️ LIVE TEST — delete with its block */
+  const [liveConfirm, setLiveConfirm] = useState("");
+  const armed = liveConfirm.trim() === "BOOK A REAL RIDER";
+  const isLive = status.environment !== "sandbox";
   if (booking?.step === "draft" && booking.ok && booking.job?.jobId &&
       booking.job.jobId !== draftId) {
     setDraftId(booking.job.jobId);
@@ -783,6 +855,47 @@ export default function Courier() {
                 </Badge>
               </InlineStack>
 
+              {/* ================================================================= */}
+              {/* ⚠️  LIVE TEST BLOCK — DELETE THIS JSX BEFORE HANDING OVER  ⚠️    */}
+              {isLive && (
+                <Banner
+                  tone={armed ? "critical" : "warning"}
+                  title={armed ? "ARMED — the next confirm sends a real rider" : "Live account: booking is locked"}
+                >
+                  <BlockStack gap="300">
+                    <Text as="p">
+                      This is <Text as="span" fontWeight="semibold">production</Text>. A
+                      confirmed job here dispatches a real courier to 29 Rathbone Place and
+                      charges your Gophr account. The draft is free; the confirm is not.
+                    </Text>
+                    <Text as="p">
+                      To unlock, type{" "}
+                      <Text as="span" fontWeight="semibold">BOOK A REAL RIDER</Text> below.
+                      It is a typed phrase rather than a tick box because a tick box is one
+                      stray click from somebody on a bike, and it is checked on the server
+                      as well as here.
+                    </Text>
+                    <TextField
+                      label="Type the phrase to unlock"
+                      value={liveConfirm}
+                      onChange={setLiveConfirm}
+                      autoComplete="off"
+                      placeholder="BOOK A REAL RIDER"
+                    />
+                    <Text as="p" fontWeight="semibold">
+                      The rider will be told, in the job notes, that this is a test and
+                      there is nothing to collect. Cancel the job as soon as they arrive —
+                      the Cancel button is at the bottom of this card.
+                    </Text>
+                    <Text as="p" tone="subdued" variant="bodySm">
+                      This whole panel is scaffolding and is marked for deletion in the
+                      code. It must not survive into a version anybody else runs.
+                    </Text>
+                  </BlockStack>
+                </Banner>
+              )}
+              {/* ==== END LIVE TEST JSX ========================================== */}
+
               <Banner tone="info" title="Booking is two steps, and only the second one dispatches">
                 <List>
                   <List.Item>
@@ -814,14 +927,14 @@ export default function Courier() {
                   <Button
                     onClick={() =>
                       fetcher.submit(
-                        { intent: "draft", perishable: "false", when },
+                        { intent: "draft", perishable: "false", when, liveConfirm },
                         { method: "POST" }
                       )
                     }
                     loading={running}
-                    disabled={status.environment !== "sandbox" || !status.configured}
+                    disabled={(isLive && !armed) || !status.configured}
                   >
-                    Create a draft job
+                    {isLive ? "Create a REAL draft job" : "Create a draft job"}
                   </Button>
                 </InlineStack>
               </BlockStack>
@@ -854,16 +967,14 @@ export default function Courier() {
                     tone="critical"
                     onClick={() =>
                       fetcher.submit(
-                        { intent: "confirm", jobId: draftId, confirmBody },
+                        { intent: "confirm", jobId: draftId, confirmBody, liveConfirm },
                         { method: "POST" }
                       )
                     }
                     loading={running}
-                    disabled={
-                      status.environment !== "sandbox" || !status.configured || !draftId
-                    }
+                    disabled={(isLive && !armed) || !status.configured || !draftId}
                   >
-                    Confirm the draft
+                    {isLive ? "CONFIRM — DISPATCHES A REAL RIDER" : "Confirm the draft"}
                   </Button>
                 </InlineStack>
               </BlockStack>
@@ -908,6 +1019,30 @@ export default function Courier() {
                 </InlineStack>
               </BlockStack>
 
+              {/* ================================================================= */}
+              {/* ⚠️  LIVE TEST BLOCK — DELETE THIS JSX BEFORE HANDING OVER  ⚠️    */}
+              <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">Call it off</Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Cancels the job at Gophr. Allowed in every environment — stopping is
+                  never the risk. Use this the moment a test rider arrives.
+                </Text>
+                <InlineStack gap="300">
+                  <Button
+                    tone="critical"
+                    variant="primary"
+                    onClick={() =>
+                      fetcher.submit({ intent: "cancel", jobId: draftId }, { method: "POST" })
+                    }
+                    loading={running}
+                    disabled={!draftId}
+                  >
+                    Cancel job {draftId ? draftId.slice(0, 8) : ""}
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+              {/* ==== END LIVE TEST JSX ========================================== */}
+
               {/* ---- what happened ---- */}
               {booking && booking.ok && (
                 <Banner
@@ -917,7 +1052,9 @@ export default function Courier() {
                       ? "Draft created — nothing dispatched"
                       : booking.step === "progress"
                         ? `Advanced${booking.job?.status ? ` to ${booking.job.status}` : ""} — the webhook should have fired`
-                        : "Confirmed — this one is real"
+                        : booking.step === "cancel"
+                          ? "Cancelled at Gophr"
+                          : "Confirmed — this one is real"
                   }
                 >
                   <BlockStack gap="200">
