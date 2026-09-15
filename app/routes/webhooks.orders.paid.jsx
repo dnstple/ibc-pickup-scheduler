@@ -121,6 +121,21 @@ async function writeBack(admin, order, updates, tags) {
   }
 }
 
+/* `#1092` -> `1092`.
+ *
+ * Shopify order names carry a leading `#`, and it travels into Gophr as the
+ * job's external_id and into the parcel id. Gophr has not complained about it
+ * yet, but an identifier with a punctuation prefix is the kind of thing that
+ * passes validation and then breaks a lookup or a URL later. The name is
+ * still recognisable without it, which is the only reason it is worth
+ * normalising rather than sending as-is. */
+function orderRef(order) {
+  const name = String(order?.name || "").replace(/^#/, "").trim();
+  if (name) return name;
+  const id = String(order?.id || "");
+  return id.split("/").pop() || "order";
+}
+
 /** The dropoff, as Gophr wants it, from the order's shipping address. */
 function destinationFrom(order) {
   const a = order?.shippingAddress || {};
@@ -148,7 +163,7 @@ function parcelFrom(order) {
   return parcelFor({
     grams: Number.isFinite(grams) && grams > 0 ? grams : 500,
     perishable,
-    id: `ibc-${String(order?.name || order?.id || "order").replace(/[^A-Za-z0-9-]/g, "")}`,
+    id: `ibc-${orderRef(order)}`,
   });
 }
 
@@ -241,7 +256,7 @@ export const action = async ({ request }) => {
         destination,
         parcel: parcelFrom(order),
         earliestPickup: first.pickupIso,
-        externalId: order.name || order.id,
+        externalId: orderRef(order),
         reference: order.name || undefined,
         dropoffNotes: first.intent?.label
           ? `Delivery window: ${first.intent.label}`
@@ -325,6 +340,33 @@ export const action = async ({ request }) => {
 
     if (verdict.retry) {
       log(gid, "asking Shopify to retry;", Math.round(verdict.minutes), "minutes old");
+
+      /* SAY WHAT WENT WRONG ON THE ORDER, NOT ONLY IN THE LOGS.
+       *
+       * A retrying webhook writes nothing and answers 500, so for the first
+       * twenty minutes the only record of the failure is a Vercel log line —
+       * which nobody is watching at four on a Saturday, and which is a poor
+       * place to keep the one sentence explaining why a customer's chocolate
+       * is not moving.
+       *
+       * This writes the NOTE ONLY. No status, so existingBooking() does not
+       * treat the order as settled and the retries carry on as intended; if
+       * one of them succeeds the note is cleared by bookedAttributes(). It is
+       * a running commentary, not a verdict. */
+      try {
+        const response = await admin.graphql(ORDER_QUERY, { variables: { id: gid } });
+        const { data } = await response.json();
+        if (data?.order) {
+          await writeBack(admin, data.order, {
+            ibc_courier_note:
+              `Trying to book the courier: ${error?.message || "unknown error"}` +
+              `${isGophr && error.body ? ` — ${JSON.stringify(error.body).slice(0, 400)}` : ""}`,
+          });
+        }
+      } catch (noteError) {
+        log(gid, "could not leave a note:", noteError?.message || noteError);
+      }
+
       return new Response("retry", { status: 500 });
     }
 
