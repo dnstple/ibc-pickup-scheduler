@@ -145,7 +145,8 @@ export default function FulfilmentSettingsPage() {
     const keys = Object.keys(errors);
     const named = new Set();
     keys.forEach((key) => {
-      if (key.startsWith("delivery.") || key.startsWith("sameday.")) named.add("Delivery");
+      if (key.startsWith("delivery.") || key.startsWith("sameday.") ||
+          key.startsWith("booking.")) named.add("Delivery");
       else if (key.startsWith("blackout_dates.")) named.add("Collection Closures");
       else if (key.startsWith("capacity_overrides.")) named.add("Collection Capacity");
       else named.add("Collection");
@@ -183,6 +184,20 @@ export default function FulfilmentSettingsPage() {
       delivery: {
         ...prev.delivery,
         sameday: { ...prev.delivery.sameday, ...patch },
+      },
+    }));
+    setDirty(true);
+  }, []);
+
+  /* The booking block is what happens AFTER a same-day order is paid for, so
+   * it sits beside `sameday` rather than inside it: one is what the customer
+   * is offered, the other is what the shop spends. */
+  const updateBooking = useCallback((patch) => {
+    setSettings((prev) => ({
+      ...prev,
+      delivery: {
+        ...prev.delivery,
+        booking: { ...(prev.delivery.booking || {}), ...patch },
       },
     }));
     setDirty(true);
@@ -371,6 +386,7 @@ export default function FulfilmentSettingsPage() {
             updateDelivery={updateDelivery}
             updateSameday={updateSameday}
             updateSamedayZone={updateSamedayZone}
+            updateBooking={updateBooking}
             weeklyHours={settings.weekly_hours}
             updateDeliveryBlackout={updateDeliveryBlackout}
             addDeliveryBlackout={addDeliveryBlackout}
@@ -419,6 +435,169 @@ export default function FulfilmentSettingsPage() {
 }
 
 /* ============================================================================
+   BOOKING THE COURIER — what happens after a same-day order is paid for
+   ========================================================================== */
+
+/**
+ * The settings behind the orders/paid webhook.
+ *
+ * SEPARATE FROM THE SAME-DAY CARD ON PURPOSE. That one is about what the
+ * customer is offered — zones, windows, cut-offs. This is about what the shop
+ * SPENDS, and the two are edited by the same person in different moods.
+ *
+ * The card shows what each limit means in real money against the shop's own
+ * zone prices, because "1.6" and "2500" are not numbers anybody can judge in
+ * the abstract. A ceiling that no zone can ever reach looks like protection
+ * and is decoration — that mistake was shipped once already and caught by a
+ * test, so the arithmetic is on screen now rather than in a comment.
+ */
+function BookingCard({ booking, sameday, errors, updateBooking }) {
+  const b = booking || {};
+  const multiple = Number(b.ceiling_multiple ?? 1.6);
+  const headroom = Number(b.headroom_pence ?? 500);
+  const ceiling = Number(b.ceiling_pence ?? 2500);
+
+  const pounds = (pence) => `£${(Number(pence || 0) / 100).toFixed(2)}`;
+
+  /* What each zone could actually cost the shop before a job is held back. */
+  const bands = (sameday?.zones || []).map((zone) => {
+    const band = Math.round(Number(String(zone.price || "0").replace(/[^0-9.]/g, "")) * 100);
+    const byMultiple = Math.max(Math.round(band * multiple), band + headroom);
+    const allowed = Math.min(byMultiple, ceiling);
+    return {
+      id: zone.id,
+      band,
+      allowed,
+      /* Which of the two rules actually bites. A zone where the ceiling never
+       * binds is a zone the ceiling is not protecting. */
+      binding: ceiling < byMultiple ? "ceiling" : "band",
+    };
+  });
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="150">
+          <Text as="h3" variant="headingMd">Booking the courier</Text>
+          <Text as="p" tone="subdued">
+            What happens after a same-day order is paid for. Same-day has to be
+            switched on above for any of this to run.
+          </Text>
+        </BlockStack>
+
+        <Checkbox
+          label="Book the rider automatically"
+          checked={b.auto_book === true}
+          onChange={(v) => updateBooking({ auto_book: v })}
+          helpText={
+            b.auto_book === true
+              ? "A paid same-day order books a rider on its own, unless the price trips one of the limits below."
+              : "OFF: every same-day order still gets a real Gophr price written onto it and a draft job waiting in Gophr — but no rider is booked until you confirm it yourself. Leave it here until you have a fortnight of real prices to look at."
+          }
+        />
+
+        <Divider />
+
+        <BlockStack gap="150">
+          <Text as="h4" variant="headingSm">When to ask you first</Text>
+          <Text as="p" tone="subdued" variant="bodySm">
+            Three limits, and the TIGHTEST one wins. A job over it is left as an
+            unconfirmed draft with a note on the order, rather than booked.
+          </Text>
+        </BlockStack>
+
+        <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
+          <TextField
+            label="Multiple of the zone price"
+            type="number"
+            step={0.1}
+            min={1}
+            value={String(b.ceiling_multiple ?? 1.6)}
+            onChange={(v) => updateBooking({ ceiling_multiple: Number(v) })}
+            error={errors["booking.ceiling_multiple"]}
+            helpText="1.6 allows a job up to 1.6× what the customer paid."
+            autoComplete="off"
+          />
+          <TextField
+            label="Always allow this much over (pence)"
+            type="number"
+            min={0}
+            value={String(b.headroom_pence ?? 500)}
+            onChange={(v) => updateBooking({ headroom_pence: Number(v) })}
+            error={errors["booking.headroom_pence"]}
+            helpText="Stops a cheap zone tripping on pennies."
+            autoComplete="off"
+          />
+          <TextField
+            label="Hard ceiling (pence)"
+            type="number"
+            min={100}
+            value={String(b.ceiling_pence ?? 2500)}
+            onChange={(v) => updateBooking({ ceiling_pence: Number(v) })}
+            error={errors["booking.ceiling_pence"]}
+            helpText="Nothing books above this, whatever the zone."
+            autoComplete="off"
+          />
+        </InlineGrid>
+
+        {bands.length > 0 && (
+          <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+            <BlockStack gap="200">
+              <Text as="p" variant="bodySm" fontWeight="semibold">
+                What that means for your zones
+              </Text>
+              {bands.map((z) => (
+                <Text as="p" key={z.id} variant="bodySm">
+                  <Text as="span" fontWeight="semibold">Zone {z.id}</Text> — charged{" "}
+                  {pounds(z.band)}, books itself up to{" "}
+                  <Text as="span" fontWeight="semibold">{pounds(z.allowed)}</Text>{" "}
+                  <Text as="span" tone="subdued">
+                    ({z.binding === "ceiling" ? "held by the hard ceiling" : "held by the multiple"})
+                  </Text>
+                </Text>
+              ))}
+              {bands.every((z) => z.binding === "band") && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  The hard ceiling never bites on any of your zones, so it is doing
+                  nothing. Lower it if you want it to be a real limit.
+                </Text>
+              )}
+            </BlockStack>
+          </Box>
+        )}
+
+        <Divider />
+
+        <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+          <TextField
+            label="Ask for the rider this many minutes before the window opens"
+            type="number"
+            min={0}
+            max={240}
+            value={String(b.pickup_offset_minutes ?? 30)}
+            onChange={(v) => updateBooking({ pickup_offset_minutes: Number(v) })}
+            error={errors["booking.pickup_offset_minutes"]}
+            helpText="The window is when it should ARRIVE. The rider has to collect before that."
+            autoComplete="off"
+          />
+          <TextField
+            label="Grace period on a window that has just passed (minutes)"
+            type="number"
+            min={0}
+            max={240}
+            value={String(b.grace_minutes ?? 15)}
+            onChange={(v) => updateBooking({ grace_minutes: Number(v) })}
+            error={errors["booking.grace_minutes"]}
+            helpText="Covers a slow payment. Past this, the order is flagged instead of booked."
+            autoComplete="off"
+          />
+        </InlineGrid>
+      </BlockStack>
+    </Card>
+  );
+}
+
+/* ============================================================================
    DELIVERY
    ========================================================================== */
 
@@ -430,6 +609,7 @@ function DeliveryTab({
   updateDelivery,
   updateSameday,
   updateSamedayZone,
+  updateBooking,
   weeklyHours,
   updateDeliveryBlackout,
   addDeliveryBlackout,
@@ -642,6 +822,13 @@ function DeliveryTab({
             today={today}
             updateSameday={updateSameday}
             updateSamedayZone={updateSamedayZone}
+          />
+
+          <BookingCard
+            booking={d.booking || {}}
+            sameday={d.sameday || {}}
+            errors={errors}
+            updateBooking={updateBooking}
           />
 
           <Card>
