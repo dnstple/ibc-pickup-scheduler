@@ -152,13 +152,37 @@ function parcelFrom(order) {
   });
 }
 
+/* Topics arrive spelled differently depending on the library version — some
+ * hand back `orders/paid`, some `ORDERS_PAID`. A strict `!==` against one
+ * spelling turns the other into a silent 200 that writes nothing, logs
+ * nothing and looks exactly like a webhook that never fired. Both spellings
+ * normalise to the same thing here. */
+const sameTopic = (topic, wanted) =>
+  String(topic || "").toUpperCase().replace(/[^A-Z]+/g, "_") === wanted;
+
 export const action = async ({ request }) => {
   const { topic, shop, payload, admin } = await authenticate.webhook(request);
 
-  if (topic !== "ORDERS_PAID") return new Response();
+  /* EVERY EXIT FROM THIS FUNCTION SAYS SO, including the boring ones.
+   *
+   * The first version returned a bare 200 from three different places without
+   * a word. When an order came through and nothing happened, there was no way
+   * to tell a webhook that never arrived from one that arrived and fell out
+   * of the first `if` — and those need completely different fixes. One line
+   * per exit is cheap; an afternoon spent guessing is not. */
+  log("received", topic, "for", payload?.name || payload?.id || "(unknown order)");
+
+  if (!sameTopic(topic, "ORDERS_PAID")) {
+    log("not an orders/paid topic; ignoring:", topic);
+    return new Response();
+  }
+
   /* An uninstalled shop has no admin client. Nothing to do and nothing to
    * retry — answering 200 stops Shopify asking again. */
-  if (!admin) return new Response();
+  if (!admin) {
+    log("no admin client for", shop, "— is the app still installed?");
+    return new Response();
+  }
 
   const gid = payload?.admin_graphql_api_id;
   if (!gid) {
