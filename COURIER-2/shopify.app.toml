@@ -1,0 +1,47 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+name = "Pickup Scheduler"
+handle = "pickup-scheduler-settings"
+application_url = "https://ibc-pickup-scheduler.vercel.app"
+embedded = true
+client_id = "97c44561f62e59f3612192b5d5c96d48"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+#
+# write_orders lets the post-purchase picker save the chosen collection slot onto
+# the order's note attributes. Everything else stays read-only.
+#
+# Adding a scope invalidates the existing access token until the merchant
+# re-approves, so after deploying this, open the app in Shopify admin and accept
+# the new permissions before testing.
+scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_orders"
+
+[auth]
+redirect_urls = [ "https://ibc-pickup-scheduler.vercel.app/auth/callback" ]
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  # Same-day orders book a courier the moment they are paid for. Handled by
+  # app/routes/webhooks.orders.paid.jsx, which ignores every order that is not
+  # marked same-day.
+  #
+  # NO NEW SCOPES. read_orders and write_orders are already granted above, so
+  # this does not invalidate the access token and the merchant is not asked to
+  # re-approve anything.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/paid"
+  topics = [ "orders/paid" ]
+
+[app_proxy]
+url = "https://ibc-pickup-scheduler.vercel.app/proxy"
+prefix = "apps"
+subpath = "ibc-pickup"
+
+[build]
+automatically_update_urls_on_dev = true

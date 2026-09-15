@@ -1,0 +1,507 @@
+// Gophr Commercial API v2 client. SERVER ONLY — never import this into
+// anything that reaches the browser.
+//
+// CREDENTIALS
+// -----------
+// The API key is read from the environment and is never stored in the settings
+// metafield, never written to the theme, and never logged. Set it in Vercel:
+//
+//     GOPHR_API_KEY   = <the key from Gophr's Developer Hub>
+//     GOPHR_ENV       = sandbox | production     (default: sandbox)
+//
+// The default is sandbox on purpose. Production has to be asked for by name,
+// so nobody dispatches a real rider by changing one unrelated thing.
+//
+// WHAT IS AND IS NOT CONFIRMED
+// ----------------------------
+// Confirmed from Gophr's documentation:
+//   · auth is the `API-KEY` request header
+//   · sandbox    https://api-sandbox.gophr.com/v2-commercial-api
+//   · production https://api.gophr.com/v2-commercial-api
+//   · sandbox jobs are NOT dispatched to real couriers
+//   · POST /quotes takes `pickups` and `dropoffs` arrays
+//   · vehicle is chosen by Gophr from parcel size, weight and distance —
+//     there is no documented code to force one
+//
+// Confirmed by a real 422 from the sandbox on 14 September 2026, which listed
+// every field it wanted by name:
+//   · fields are FLAT and PREFIXED, not nested objects —
+//     pickup_address1, pickup_postcode, pickup_country_code,
+//     dropoff_address1, dropoff_postcode, dropoff_country_code
+//   · `parcels` is required on BOTH the pickup and the dropoff, minimum one
+//   · each parcel needs a `parcel_external_id` string
+//   · unknown fields are ignored rather than rejected — the first attempt sent
+//     `sequence`, `address` and `contact` objects and Gophr complained only
+//     about what was missing, never about what was extra
+//
+// Also confirmed, by a second 422 once the shape above was right:
+//   · parcel dimensions are NOT prefixed. They are bare `length`, `width`,
+//     `height` and `weight`, and each must be a number greater than zero.
+//     The convention is mixed — `parcel_external_id` carries the prefix and
+//     the dimensions do not — which is exactly why it could not be guessed
+//     from the other field names.
+//
+// And confirmed by the first successful quote, 14 September 2026:
+//   · the response is
+//       { data: { job_priority, vehicle_type, price_net, price_gross,
+//                 pickup_eta, delivery_eta, min_realistic_time } }
+//   · prices are OBJECTS — { amount: 7.5, currency: "GBP" } — not numbers,
+//     and in pounds rather than pence
+//   · price_gross is price_net x 1.2, so net is ex-VAT and gross inc-VAT
+//   · vehicle_type is a numeric code, not a name
+//
+// STILL INFERRED:
+//   · the UNIT of `weight`. Sent as kilograms, because Gophr's published
+//     vehicle table is in kg (pushbike 10kg, cargo bike 100kg). If it wants
+//     grams, a 2.1kg cake reads as 2.1 grams and gets a pushbike.
+//     ⚠️ The proof is comparative: quote the same journey as a small parcel
+//     and as a cake. A different `vehicle_type` code means size and weight
+//     reached the decision. The same code on both means they did not.
+
+const BASE_URLS = {
+  sandbox: "https://api-sandbox.gophr.com/v2-commercial-api",
+  production: "https://api.gophr.com/v2-commercial-api",
+};
+
+// Moves into the settings metafield in the next increment. It is here, once,
+// rather than scattered through the call sites.
+export const PICKUP = {
+  name: "Italian Bear Chocolate",
+  address1: "29 Rathbone Place",
+  city: "London",
+  postcode: "W1T 1JG",
+  country_code: "GB", // ISO 3166-1 alpha-2
+};
+
+export function gophrEnv() {
+  const value = (process.env.GOPHR_ENV || "sandbox").trim().toLowerCase();
+  return value === "production" ? "production" : "sandbox";
+}
+
+/**
+ * The key, with surrounding whitespace removed.
+ *
+ * Pasting into a hosting dashboard picks up a trailing newline more often than
+ * anyone admits, and the header then carries it straight to the API, which
+ * rejects it as a different key. Trimming costs nothing and removes a whole
+ * category of "but I copied it correctly".
+ */
+export function gophrKey() {
+  return (process.env.GOPHR_API_KEY || "").trim();
+}
+
+export function gophrConfigured() {
+  return Boolean(gophrKey());
+}
+
+/**
+ * Work out whether a key belongs to the environment it is being used against,
+ * without knowing or revealing the key itself.
+ *
+ * Gophr's documented example of a sandbox key is
+ * `sand-2a7df6bd-8ed3-48ad-b801-05093a866e66`, so sandbox keys carry a
+ * `sand-` prefix and keys are environment-specific. A production key sent to
+ * the sandbox endpoint gets a 401 that says nothing about why.
+ *
+ * Pure, so it can be tested without any environment at all.
+ */
+export function diagnoseKey(rawKey, environment) {
+  const raw = typeof rawKey === "string" ? rawKey : "";
+  const key = raw.trim();
+  const looksSandbox = key.toLowerCase().startsWith("sand-");
+  const hadWhitespace = raw !== key && raw.length > 0;
+
+  let mismatch = null;
+  if (key) {
+    if (environment === "sandbox" && !looksSandbox) {
+      mismatch = "production-key-on-sandbox";
+    } else if (environment === "production" && looksSandbox) {
+      mismatch = "sandbox-key-on-production";
+    }
+  }
+
+  return {
+    present: Boolean(key),
+    looksSandbox,
+    hadWhitespace,
+    length: key.length,
+    mismatch,
+  };
+}
+
+/**
+ * What the admin page is allowed to know about the credentials.
+ * Never the key, and never any part of it — only shape and fit.
+ */
+export function gophrStatus() {
+  const environment = gophrEnv();
+  const key = diagnoseKey(process.env.GOPHR_API_KEY, environment);
+  return {
+    configured: key.present,
+    environment,
+    baseUrl: BASE_URLS[environment],
+    dispatchesRealRiders: environment === "production",
+    key,
+  };
+}
+
+class GophrError extends Error {
+  constructor(message, { status, body } = {}) {
+    super(message);
+    this.name = "GophrError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function call(path, { method = "GET", body, timeoutMs = 8000 } = {}) {
+  if (!gophrConfigured()) {
+    throw new GophrError("GOPHR_API_KEY is not set in this environment.");
+  }
+  const url = `${BASE_URLS[gophrEnv()]}${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        "API-KEY": gophrKey(),
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (error.name === "AbortError") {
+      throw new GophrError(`Gophr did not answer within ${timeoutMs}ms.`);
+    }
+    throw new GophrError(`Could not reach Gophr: ${error.message}`);
+  }
+  clearTimeout(timer);
+
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = { raw: text }; // an HTML error page, most likely
+  }
+
+  if (!response.ok) {
+    throw new GophrError(`Gophr returned ${response.status}.`, {
+      status: response.status,
+      body: parsed,
+    });
+  }
+  return parsed;
+}
+
+/**
+ * A parcel description for a basket.
+ *
+ * Gophr picks the vehicle from size, weight and distance, so this is how a
+ * cake ends up on a cargo bike rather than a moped: give it dimensions a
+ * pushbike cannot take. A pushbike caps at 40 × 30 × 30cm and 10kg; a cargo
+ * bike at 100cm each way and 100kg.
+ *
+ * `perishable` therefore does real work here, not just in the copy.
+ */
+export function parcelFor({ grams = 500, perishable = false, id = "ibc-parcel-1" } = {}) {
+  const dims = perishable
+    ? { length: 45, width: 45, height: 30 }
+    : { length: 30, width: 25, height: 20 };
+  return {
+    // Prefixed. The dimensions below are not — Gophr's own validator says so.
+    parcel_external_id: id,
+    // Centimetres, bare names, each must be greater than zero.
+    length: dims.length,
+    width: dims.width,
+    height: dims.height,
+    // Kilograms (see the header — unit still to be confirmed). A product with
+    // no weight set must not quote as a 0kg parcel: Gophr rejects anything
+    // that is not greater than zero.
+    weight: Math.max(Number(grams) || 0, perishable ? 500 : 100) / 1000,
+  };
+}
+
+/**
+ * Build the quote request body.
+ *
+ * The same parcel object appears in both the pickup and the dropoff, carrying
+ * the same `parcel_external_id`. That is how Gophr links the two ends: the id
+ * says "the thing collected here is the thing delivered there". It is what
+ * makes multi-drop work, and a single drop is just the one-item case.
+ */
+export function buildQuoteBody({ destination, parcel, earliestPickup = null }) {
+  const pickup = {
+    pickup_address1: PICKUP.address1,
+    pickup_city: PICKUP.city,
+    pickup_postcode: PICKUP.postcode,
+    pickup_country_code: PICKUP.country_code,
+    parcels: [parcel],
+  };
+  if (earliestPickup) pickup.earliest_pickup_time = earliestPickup;
+
+  return {
+    pickups: [pickup],
+    dropoffs: [
+      {
+        dropoff_address1: destination.address1 || "",
+        dropoff_city: destination.city || "London",
+        dropoff_postcode: destination.postcode,
+        dropoff_country_code: destination.country_code || "GB",
+        parcels: [parcel],
+      },
+    ],
+  };
+}
+
+/**
+ * Read a money value, whatever form it arrives in.
+ *
+ * Gophr sends `{ "amount": 7.5, "currency": "GBP" }` — an object, not a
+ * number, which is what the first working run revealed. Bare numbers and
+ * numeric strings are still accepted so this does not become brittle if a
+ * different endpoint answers differently.
+ *
+ * Returns { amount, currency } or null. Never invents a figure.
+ */
+export function readAmount(node) {
+  if (node == null) return null;
+  if (typeof node === "number") {
+    return Number.isFinite(node) ? { amount: node, currency: null } : null;
+  }
+  if (typeof node === "string") {
+    const n = Number(node);
+    return Number.isFinite(n) && node.trim() !== "" ? { amount: n, currency: null } : null;
+  }
+  if (typeof node === "object" && "amount" in node) {
+    const raw = node.amount;
+    const n = typeof raw === "string" ? Number(raw) : raw;
+    if (typeof n === "number" && Number.isFinite(n)) {
+      return { amount: n, currency: node.currency || null };
+    }
+  }
+  return null;
+}
+
+/**
+ * Everything worth knowing from a quote response.
+ *
+ * Confirmed shape, from a real sandbox quote:
+ *   { data: { job_priority, vehicle_type, price_net: {amount,currency},
+ *             price_gross: {amount,currency}, pickup_eta, delivery_eta,
+ *             min_realistic_time } }
+ *
+ * `price_net` is ex-VAT and `price_gross` is inc-VAT — gross is exactly
+ * net x 1.2 on every journey seen so far.
+ */
+export function readQuote(payload) {
+  const d = payload && typeof payload === "object" && payload.data ? payload.data : payload;
+  const gross = readAmount(d?.price_gross);
+  const net = readAmount(d?.price_net);
+
+  // Fallback for any shape we have not met, so an unexpected response degrades
+  // to "no price" rather than to a wrong one.
+  let fallback = null;
+  if (!gross && !net) {
+    for (const key of ["price", "total_price", "amount"]) {
+      const found = readAmount(d?.[key]);
+      if (found) { fallback = { value: found, path: key }; break; }
+    }
+  }
+
+  const headline = gross || net || fallback?.value || null;
+
+  return {
+    amount: headline ? headline.amount : null,
+    currency: headline?.currency || gross?.currency || net?.currency || null,
+    path: gross ? "data.price_gross" : net ? "data.price_net" : fallback?.path || null,
+    gross,
+    net,
+    // A numeric code. Gophr picks the vehicle itself; the code is the only
+    // proof that size and weight reached the decision.
+    vehicleType: typeof d?.vehicle_type === "number" ? d.vehicle_type : null,
+    pickupEta: d?.pickup_eta || null,
+    deliveryEta: d?.delivery_eta || null,
+    // Gophr's own estimate of the realistic door-to-door time, in minutes.
+    minRealisticMinutes:
+      typeof d?.min_realistic_time === "number" ? d.min_realistic_time : null,
+  };
+}
+
+/** Ask Gophr what a journey would cost. Returns the raw payload as well. */
+export async function quote({ destination, parcel, earliestPickup = null }) {
+  const body = buildQuoteBody({ destination, parcel, earliestPickup });
+  const payload = await call("/quotes", { method: "POST", body });
+  return { request: body, response: payload, price: readQuote(payload) };
+}
+
+export { GophrError, BASE_URLS };
+
+/* ==================================================================== */
+/* BOOKING A JOB                                                         */
+/*                                                                       */
+/* ⚠️ THE REQUEST SHAPE BELOW IS INFERRED, NOT PROVEN.                   */
+/*                                                                       */
+/* Everything above this line was settled by real requests: four round   */
+/* trips established that `/quotes` wants flat prefixed address fields   */
+/* but BARE parcel dimensions, `parcels` on both ends, and prices read   */
+/* back as objects rather than numbers. None of that was in the docs.    */
+/*                                                                       */
+/* `POST /job` has had no such round trip yet. What is known:            */
+/*   - the path is /job (singular), from the published endpoint list     */
+/*   - creating a delivery separately needs pickup_person_name and       */
+/*     pickup_mobile_number, which quotes never asked for — so a job     */
+/*     almost certainly needs contacts at both ends                      */
+/*   - deliveries carry an `external_id`, which Gophr echoes back on its */
+/*     status webhooks, so it is the natural idempotency handle          */
+/*                                                                       */
+/* THE FIRST CALL WILL PROBABLY 422 WITH A LIST OF FIELD NAMES. That is  */
+/* the intended outcome, not a failure: it is how the quote shape was    */
+/* found. `bookJob` therefore returns the request alongside any error,   */
+/* because the one time that was left out, a deploy that had not taken   */
+/* effect looked exactly like a payload bug and cost a round trip.       */
+/*                                                                       */
+/* Do not "tidy" this by guessing more fields. Send it, read what Gophr  */
+/* says it wants, change it to that.                                     */
+
+/**
+ * The shop's own phone number, which Gophr needs for the collection.
+ *
+ * An env var rather than a constant because it is an operational detail that
+ * differs between the sandbox and the real shop, and rather than a settings
+ * field because a missing phone must stop a booking, not produce a form the
+ * shop can save while empty.
+ */
+export function pickupMobile() {
+  return (process.env.GOPHR_PICKUP_MOBILE || "").trim();
+}
+
+/**
+ * Build the job request.
+ *
+ * `externalId` is the order — it is what ties a Gophr status webhook back to
+ * something in Shopify, and it is the only thing standing between a retried
+ * Shopify webhook and a second rider if Gophr enforces uniqueness on it.
+ */
+export function buildJobBody({
+  destination,
+  parcel,
+  earliestPickup = null,
+  externalId,
+  reference = null,
+  pickupNotes = null,
+  dropoffNotes = null,
+}) {
+  const pickup = {
+    pickup_address1: PICKUP.address1,
+    pickup_city: PICKUP.city,
+    pickup_postcode: PICKUP.postcode,
+    pickup_country_code: PICKUP.country_code,
+    pickup_person_name: PICKUP.name,
+    pickup_mobile_number: pickupMobile(),
+    parcels: [parcel],
+  };
+  if (earliestPickup) pickup.earliest_pickup_time = earliestPickup;
+  if (pickupNotes) pickup.pickup_instructions = String(pickupNotes);
+
+  const dropoff = {
+    dropoff_address1: destination.address1 || "",
+    dropoff_city: destination.city || "London",
+    dropoff_postcode: destination.postcode,
+    dropoff_country_code: destination.country_code || "GB",
+    dropoff_person_name: destination.name || "",
+    dropoff_mobile_number: destination.mobile || "",
+    parcels: [parcel],
+    external_id: String(externalId || ""),
+  };
+  if (destination.address2) dropoff.dropoff_address2 = String(destination.address2);
+  if (destination.email) dropoff.dropoff_email = String(destination.email);
+  if (dropoffNotes) dropoff.dropoff_instructions = String(dropoffNotes);
+
+  const body = { pickups: [pickup], dropoffs: [dropoff] };
+  if (reference) body.reference = String(reference);
+  return body;
+}
+
+/**
+ * Everything worth knowing from a job response.
+ *
+ * Written defensively for the same reason readQuote was: the shape is not
+ * confirmed, and a booking that half-reads its own confirmation is worse than
+ * one that reports nothing. Every field is null when absent — nothing here
+ * invents an id.
+ */
+export function readJob(payload) {
+  const d = payload && typeof payload === "object" && payload.data ? payload.data : payload;
+  if (!d || typeof d !== "object") return { jobId: null, deliveryId: null };
+
+  const firstDelivery = Array.isArray(d.deliveries) && d.deliveries.length
+    ? d.deliveries[0]
+    : null;
+
+  const pick = (...names) => {
+    for (const source of [d, firstDelivery]) {
+      if (!source) continue;
+      for (const name of names) {
+        const value = source[name];
+        if (value !== null && value !== undefined && value !== "") return String(value);
+      }
+    }
+    return null;
+  };
+
+  return {
+    jobId: pick("job_id", "id", "public_job_id"),
+    deliveryId: pick("delivery_id"),
+    trackingUrl: pick("tracking_url", "public_tracking_url", "url"),
+    status: pick("status", "job_status"),
+    price: readQuote(payload),
+  };
+}
+
+/**
+ * Book a rider.
+ *
+ * Returns { request, response, job } on success. On failure it throws a
+ * GophrError carrying `request` as well as Gophr's own answer, so a 422 can
+ * be read against exactly what was sent.
+ */
+export async function bookJob(options) {
+  const body = buildJobBody(options);
+
+  if (!pickupMobile()) {
+    throw new GophrError(
+      "GOPHR_PICKUP_MOBILE is not set, and Gophr needs a number for the collection.",
+      { request: body }
+    );
+  }
+
+  let payload;
+  try {
+    payload = await call("/job", { method: "POST", body, timeoutMs: 12000 });
+  } catch (error) {
+    if (error instanceof GophrError) {
+      error.request = body;
+      throw error;
+    }
+    throw error;
+  }
+
+  return { request: body, response: payload, job: readJob(payload) };
+}
+
+/** Call off a rider. Used when a booking succeeded but the order was cancelled. */
+export async function cancelJob(jobId, reason = "Order cancelled") {
+  if (!jobId) throw new GophrError("No job id to cancel.");
+  const payload = await call(`/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+    body: { reason: String(reason) },
+  });
+  return payload;
+}

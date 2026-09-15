@@ -1,0 +1,519 @@
+// Deciding whether an order needs a courier, whether the quote is acceptable,
+// and what to write back onto the order. NO I/O — the same pattern as
+// availability.js and order-booking.js, so every rule here is unit-testable
+// without a Gophr key or a Shopify session.
+//
+// The I/O lives in two places and only two:
+//   app/lib/gophr.server.js          talks to Gophr
+//   app/routes/webhooks.orders.paid  talks to Shopify
+//
+// WHY A SEPARATE FILE FROM order-booking.js. That one is about collection
+// slots chosen after payment. This is about couriers booked after payment.
+// They share nothing but the word "booking", and merging them would put the
+// kitchen's rules and a courier's rules in one place where a change to either
+// can break the other.
+
+import { attributesToObject } from "./order-booking.js";
+
+/* ------------------------------------------------------------------ keys */
+
+/* The attributes the PICKER writes, which this module only ever reads. */
+export const SAMEDAY_READ_KEYS = [
+  "delivery_method",
+  "delivery_option",
+  "delivery_date",
+  "delivery_label",
+  "delivery_window_start",
+  "delivery_window_end",
+];
+
+/* The attributes THIS module writes. Prefixed `ibc_courier_` to sit beside
+ * `ibc_pickup_` rather than inside it: an order is one or the other, never
+ * both, and a shared prefix would invite code that assumes otherwise. */
+export const COURIER_WRITE_KEYS = [
+  "ibc_courier_status",
+  "ibc_courier_job_id",
+  "ibc_courier_delivery_id",
+  "ibc_courier_tracking_url",
+  "ibc_courier_quote_pence",
+  "ibc_courier_booked_at",
+  "ibc_courier_note",
+];
+
+/* Statuses. A small closed set, because the admin reads these and a typo
+ * would show as a blank column rather than an error. */
+export const STATUS = {
+  BOOKED: "booked",
+  REVIEW: "needs_review",
+  FAILED: "failed",
+};
+
+/* ------------------------------------------------------------------ settings */
+
+export const DEFAULT_BOOKING = {
+  /* OFF BY DEFAULT, AND THAT IS THE POINT.
+   *
+   * With this false the webhook still runs, still quotes, and still writes the
+   * quote onto the order — it simply does not book. Every same-day order lands
+   * as `needs_review` with the real Gophr price attached, so the shop can book
+   * by hand for a week and compare what it WOULD have paid against what the
+   * customer was charged, before letting anything book itself.
+   *
+   * Turning this on is a deliberate act, taken with a fortnight of real prices
+   * to look at. It is not a default anybody should inherit. */
+  auto_book: false,
+
+  /* THE CIRCUIT BREAKER. Above this, the job is flagged rather than booked.
+   *
+   * Three numbers rather than one because one is wrong at both ends. A plain
+   * multiple is too tight on a cheap band (a 60p rounding difference trips
+   * 1.6× on a £1 job that does not exist) and too loose on an expensive one
+   * (1.6× of £19.95 is £31.92, which is not a price anyone wants to discover
+   * afterwards). So: a multiple, a flat headroom that always allows a little
+   * slack, and a hard ceiling that nothing passes. */
+  ceiling_multiple: 1.6,
+  headroom_pence: 500,
+  /* £25, AND THE NUMBER IS LOAD-BEARING.
+   *
+   * The first draft of this said £40, which is a safety net with a hole the
+   * size of the thing it was catching: 1.6 × the dearest band (£19.95) is
+   * £31.92, so a £40 ceiling could never bite on any zone the shop actually
+   * sells. It looked like protection and was decoration. A test asserting it
+   * beat the multiple failed, which is how it was found.
+   *
+   * £25 bites where it should. Against Zone A (£12.95) the multiple is
+   * tighter and binds first; against Zone C (£19.95) the multiple would allow
+   * £31.92 and this stops it at £25 — a £5 loss the shop can absorb, where
+   * £32 is one it would rather be asked about. */
+  ceiling_pence: 2500,
+
+  /* HOW LONG BEFORE THE WINDOW OPENS THE RIDER IS ASKED FOR.
+   *
+   * The window the customer chose is when the chocolate should ARRIVE. The
+   * rider has to collect before that. This is the gap, and it is a setting
+   * rather than a constant because the right number is a fact about the shop's
+   * kitchen and the traffic outside it, neither of which this file knows. */
+  pickup_offset_minutes: 30,
+
+  /* A same-day order whose window has already passed by the time the webhook
+   * runs is not bookable, however good the price. Payment delays, a retried
+   * webhook and a customer who left the tab open all produce one. */
+  grace_minutes: 15,
+};
+
+export function normalizeBooking(raw) {
+  const b = { ...DEFAULT_BOOKING, ...(raw && typeof raw === "object" ? raw : {}) };
+
+  b.auto_book = b.auto_book === true;
+
+  const rawMultiple = b.ceiling_multiple;
+  const multiple = rawMultiple === null || rawMultiple === undefined || rawMultiple === ""
+    ? NaN
+    : Number(rawMultiple);
+  b.ceiling_multiple = Number.isFinite(multiple) && multiple > 0
+    ? multiple
+    : DEFAULT_BOOKING.ceiling_multiple;
+
+  /* `Number(null)` IS 0, AND 0 IS FINITE. So a null ceiling read as a ceiling
+   * of zero pence — every job over free flagged — rather than falling back to
+   * the default. Same for `undefined` via `Number(undefined)`? No: that is
+   * NaN and would have fallen back. It is null, "" and [] that lie, and they
+   * are exactly what a half-saved settings blob contains. Absence is tested
+   * for first, before the number is read. */
+  for (const key of ["headroom_pence", "ceiling_pence", "pickup_offset_minutes", "grace_minutes"]) {
+    const raw = b[key];
+    const absent = raw === null || raw === undefined || raw === "";
+    const n = absent ? NaN : Number(raw);
+    b[key] = Number.isFinite(n) ? Math.floor(n) : DEFAULT_BOOKING[key];
+  }
+
+  return b;
+}
+
+export function validateBooking(b) {
+  const errors = {};
+
+  if (!(Number(b.ceiling_multiple) >= 1)) {
+    errors["booking.ceiling_multiple"] =
+      "Enter 1 or more. Below 1 would flag every job, including the cheap ones.";
+  }
+  if (!Number.isInteger(b.ceiling_pence) || b.ceiling_pence < 100) {
+    errors["booking.ceiling_pence"] = "Enter a hard ceiling of at least £1.";
+  }
+  if (!Number.isInteger(b.headroom_pence) || b.headroom_pence < 0) {
+    errors["booking.headroom_pence"] = "Enter 0 or more.";
+  }
+  if (!Number.isInteger(b.pickup_offset_minutes) ||
+      b.pickup_offset_minutes < 0 || b.pickup_offset_minutes > 240) {
+    errors["booking.pickup_offset_minutes"] =
+      "Enter between 0 and 240 minutes before the delivery window opens.";
+  }
+  if (!Number.isInteger(b.grace_minutes) || b.grace_minutes < 0 || b.grace_minutes > 240) {
+    errors["booking.grace_minutes"] = "Enter between 0 and 240 minutes.";
+  }
+
+  /* NOT AN ERROR, BUT WORTH SAYING. A ceiling below the most expensive zone
+   * means that zone can never book itself, which looks like a broken
+   * integration rather than a setting. */
+  return errors;
+}
+
+/* ------------------------------------------------------------------ intent */
+
+/**
+ * Does this order want a courier, and what did it promise?
+ *
+ * Deliberately strict. Every reason for saying no is named, because the one
+ * question worth being able to answer at 4pm on a Saturday is "why did that
+ * order not book" — and "it did not match" is not an answer.
+ */
+export function courierIntent(order) {
+  const attributes = attributesToObject(order?.customAttributes);
+
+  const method = String(attributes.delivery_method || "").trim();
+  const option = String(attributes.delivery_option || "").trim();
+
+  if (option !== "sameday") {
+    return { wanted: false, reason: "not_sameday", attributes };
+  }
+  /* A same-day OPTION on a collection order is a stale attribute, not an
+   * instruction. The picker clears it, but an order placed mid-change could
+   * carry both, and booking a rider to deliver an order somebody is coming to
+   * collect is the worst of the available mistakes. */
+  if (method !== "delivery") {
+    return { wanted: false, reason: "not_delivery", attributes };
+  }
+  if (order?.cancelledAt) {
+    return { wanted: false, reason: "cancelled", attributes };
+  }
+
+  const date = String(attributes.delivery_date || "").trim();
+  const label = String(attributes.delivery_label || "").trim();
+  if (!date || !label) {
+    /* The checkout validation function refuses this combination, so reaching
+     * here means something wrote the attributes directly. Flagged rather than
+     * ignored: a paid same-day order with no window is a customer expecting
+     * chocolate today. */
+    return { wanted: true, incomplete: true, reason: "no_window", attributes, date, label };
+  }
+
+  return {
+    wanted: true,
+    incomplete: false,
+    reason: null,
+    attributes,
+    date,
+    label,
+    windowStart: String(attributes.delivery_window_start || "").trim() || null,
+    windowEnd: String(attributes.delivery_window_end || "").trim() || null,
+  };
+}
+
+/**
+ * What has already happened to this order.
+ *
+ * IDEMPOTENCY LIVES ON THE ORDER, not in a table. The app writes no records of
+ * its own by design — see prisma/schema.prisma — and an order that already
+ * carries a job id has already been booked, whatever this delivery of the
+ * webhook believes. Shopify retries `orders/paid`, and a retry that books a
+ * second rider costs real money.
+ */
+export function existingBooking(order) {
+  const attributes = attributesToObject(order?.customAttributes);
+  const status = String(attributes.ibc_courier_status || "").trim();
+  const jobId = String(attributes.ibc_courier_job_id || "").trim();
+
+  return {
+    status: status || null,
+    jobId: jobId || null,
+    /* A job id is proof. A status of `booked` without one is not — it would
+     * mean the write half-succeeded, and re-booking is worse than re-checking. */
+    alreadyBooked: Boolean(jobId),
+    /* `needs_review` and `failed` are both terminal for the WEBHOOK: a human
+     * deals with them. Re-running on every retry would re-quote forever. */
+    settled: Boolean(jobId) || status === STATUS.REVIEW || status === STATUS.FAILED,
+  };
+}
+
+/* ------------------------------------------------------------------ money */
+
+/** "12.95" | 12.95 | "£12.95" -> 1295, or null. */
+export function toPence(value) {
+  if (value === null || value === undefined) return null;
+  const cleaned = String(value).replace(/[^0-9.\-]/g, "").trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+}
+
+/**
+ * Is this quote acceptable?
+ *
+ * `bandPence` is what the customer was charged — the zone's price. `quotePence`
+ * is what Gophr says the job costs, GROSS, because that is what leaves the
+ * bank account. Comparing gross to gross was got wrong once already, in the
+ * margin figures in the upgrade report, and the mistake is invisible: both
+ * numbers look like prices.
+ */
+export function priceVerdict({ quotePence, bandPence, settings }) {
+  const s = normalizeBooking(settings);
+
+  if (!Number.isFinite(quotePence) || quotePence <= 0) {
+    return { ok: false, reason: "no_quote", note: "Gophr returned no usable price." };
+  }
+
+  if (!Number.isFinite(bandPence) || bandPence <= 0) {
+    /* No band to compare against — an order from a zone that has since been
+     * renamed or removed. The hard ceiling still applies, because it is the
+     * one limit that does not depend on knowing what was charged. */
+    if (quotePence > s.ceiling_pence) {
+      return {
+        ok: false,
+        reason: "over_ceiling",
+        note: `£${(quotePence / 100).toFixed(2)} is over the £${(s.ceiling_pence / 100).toFixed(2)} ceiling, and the order's zone is no longer configured.`,
+      };
+    }
+    return { ok: true, reason: "no_band", note: "No zone price to compare against." };
+  }
+
+  /* TWO LIMITS, AND THE LOWER ONE IS THE REAL ONE.
+   *
+   * Testing the ceiling first meant a £26 job on a £12.95 band was reported
+   * as "over the £25 ceiling" when the informative answer is "more than the
+   * £20.72 allowed against a £12.95 charge" — the band comparison is the one
+   * that tells the shop about its margin. Testing the band first would get
+   * the dear-band case wrong the other way. So both are computed and the
+   * binding one is named, which is what a person would say if asked. */
+  const byBand = Math.max(
+    Math.round(bandPence * s.ceiling_multiple),
+    bandPence + s.headroom_pence
+  );
+  const allowed = Math.min(byBand, s.ceiling_pence);
+
+  if (quotePence > allowed) {
+    const ceilingBinds = s.ceiling_pence < byBand;
+    return {
+      ok: false,
+      reason: ceilingBinds ? "over_ceiling" : "over_band",
+      note: ceilingBinds
+        ? `£${(quotePence / 100).toFixed(2)} is over the hard ceiling of £${(s.ceiling_pence / 100).toFixed(2)}.`
+        : `£${(quotePence / 100).toFixed(2)} is more than the £${(allowed / 100).toFixed(2)} allowed against a £${(bandPence / 100).toFixed(2)} charge.`,
+    };
+  }
+
+  return {
+    ok: true,
+    reason: null,
+    note: `£${(quotePence / 100).toFixed(2)} against £${(bandPence / 100).toFixed(2)} charged.`,
+    marginPence: bandPence - quotePence,
+  };
+}
+
+/* ------------------------------------------------------------------ timing */
+
+/**
+ * When to ask for the rider.
+ *
+ * Returns an ISO string, or null when the window has already gone.
+ *
+ * `windowStart` is an ISO time the PICKER wrote. It is not parsed out of the
+ * human label, and that is deliberate: "3:00–5:00pm" is display text, one of
+ * the windows has no time in it at all ("Any time before 9pm"), and a parser
+ * that reads prices and dates out of sentences meant for people is a parser
+ * that fails in a new locale on a quiet Sunday.
+ */
+export function pickupTime({ windowStart, settings, now = new Date() }) {
+  const s = normalizeBooking(settings);
+
+  if (!windowStart) return { iso: null, reason: "no_window_start" };
+
+  const start = new Date(windowStart);
+  if (Number.isNaN(start.getTime())) return { iso: null, reason: "bad_window_start" };
+
+  const nowMs = now.getTime();
+
+  /* The window is over. Grace covers a payment that took a minute and a
+   * webhook that took another. */
+  if (start.getTime() + s.grace_minutes * 60000 < nowMs) {
+    return { iso: null, reason: "window_passed" };
+  }
+
+  const wanted = start.getTime() - s.pickup_offset_minutes * 60000;
+
+  /* Never ask for a rider in the past. Gophr would either refuse it or send
+   * one immediately, and "immediately" is the one answer the kitchen cannot
+   * give. */
+  const at = new Date(Math.max(wanted, nowMs));
+  return { iso: at.toISOString(), reason: null };
+}
+
+/* ------------------------------------------------------------------ writes */
+
+/** What goes onto the order when a job is booked. */
+export function bookedAttributes({ job, quotePence, now = new Date() }) {
+  return {
+    ibc_courier_status: STATUS.BOOKED,
+    ibc_courier_job_id: String(job?.jobId ?? ""),
+    ibc_courier_delivery_id: job?.deliveryId ? String(job.deliveryId) : null,
+    ibc_courier_tracking_url: job?.trackingUrl ? String(job.trackingUrl) : null,
+    ibc_courier_quote_pence: Number.isFinite(quotePence) ? String(quotePence) : null,
+    ibc_courier_booked_at: now.toISOString(),
+    /* Cleared, not left standing. An order that failed, was fixed and then
+     * booked must not keep the sentence explaining why it failed. */
+    ibc_courier_note: null,
+  };
+}
+
+/** What goes onto the order when a human needs to look at it. */
+export function reviewAttributes({ note, quotePence, now = new Date() }) {
+  return {
+    ibc_courier_status: STATUS.REVIEW,
+    ibc_courier_quote_pence: Number.isFinite(quotePence) ? String(quotePence) : null,
+    ibc_courier_booked_at: now.toISOString(),
+    ibc_courier_note: String(note || "Needs a look."),
+  };
+}
+
+/** What goes onto the order when the attempt itself broke. */
+export function failedAttributes({ note, now = new Date() }) {
+  return {
+    ibc_courier_status: STATUS.FAILED,
+    ibc_courier_booked_at: now.toISOString(),
+    ibc_courier_note: String(note || "The booking attempt failed."),
+  };
+}
+
+/* ------------------------------------------------------------------ retries */
+
+/**
+ * Gophr did not answer. Ask Shopify to try again, or give up and flag it?
+ *
+ * Shopify retries `orders/paid` on a non-2xx, up to nineteen times across
+ * forty-eight hours. For most webhooks that is a gift. For this one it is a
+ * trap: a same-day window has passed long before the later retries, so a job
+ * booked on the eighth attempt at two in the morning is worse than no job —
+ * it is a rider sent for chocolate nobody is waiting for any more.
+ *
+ * So the retries are allowed for a few minutes, where they genuinely help
+ * with a blip, and then stopped by returning 200 with the order flagged. The
+ * shop sees it and rings the customer, which is what should happen anyway.
+ */
+export function retryVerdict({ paidAt, now = new Date(), maxRetryMinutes = 20 }) {
+  const paid = paidAt ? new Date(paidAt) : null;
+  if (!paid || Number.isNaN(paid.getTime())) {
+    /* No timestamp to reason from. One attempt, then flagged — better than a
+     * retry loop nothing can stop. */
+    return { retry: false, reason: "no_paid_at" };
+  }
+  const minutes = (now.getTime() - paid.getTime()) / 60000;
+  if (minutes <= maxRetryMinutes) {
+    return { retry: true, reason: "within_window", minutes };
+  }
+  return { retry: false, reason: "too_late_to_retry", minutes };
+}
+
+/* ------------------------------------------------------------------ the plan */
+
+/**
+ * THE WHOLE DECISION, in one pure function.
+ *
+ * Everything above is a part of this; this is the part the webhook calls. It
+ * takes the order, the settings and the quote, and returns what to do. It
+ * performs no I/O, so the webhook's own tests are about plumbing and this
+ * function's tests are about policy — which is the split that lets the policy
+ * be argued about without a Gophr key.
+ *
+ * `quote` is null on the first pass: the caller asks `plan()` whether to
+ * bother quoting at all, quotes if told to, then asks again with the answer.
+ * Two calls rather than a callback, so this file makes no network decisions.
+ */
+export function courierPlan({ order, booking, quote = null, now = new Date() }) {
+  const b = normalizeBooking(booking);
+  const intent = courierIntent(order);
+
+  if (!intent.wanted) {
+    return { act: "ignore", reason: intent.reason };
+  }
+
+  const already = existingBooking(order);
+  if (already.settled) {
+    return {
+      act: "ignore",
+      reason: already.alreadyBooked ? "already_booked" : "already_settled",
+      jobId: already.jobId,
+    };
+  }
+
+  if (intent.incomplete) {
+    return {
+      act: "flag",
+      reason: "no_window",
+      attributes: reviewAttributes({
+        note: "This order is marked same-day but carries no delivery window. Book the courier by hand and contact the customer.",
+        now,
+      }),
+    };
+  }
+
+  /* `b`, NOT the caller's whole settings blob. An earlier draft passed the
+   * entire scheduler settings object here, which worked only by accident: it
+   * has no pickup_offset_minutes or grace_minutes, so every lookup missed and
+   * fell back to the defaults. It would have started silently obeying the
+   * wrong numbers the day anybody added a top-level key with one of those
+   * names. */
+  const when = pickupTime({ windowStart: intent.windowStart, settings: b, now });
+  if (!when.iso) {
+    const why = when.reason === "window_passed"
+      ? `The ${intent.label} window had already passed when this order was paid.`
+      : "This order's delivery window could not be read as a time.";
+    return {
+      act: "flag",
+      reason: when.reason,
+      attributes: reviewAttributes({ note: `${why} Book by hand and contact the customer.`, now }),
+    };
+  }
+
+  /* Nothing to judge yet — the caller has not quoted. */
+  if (quote === null) {
+    return { act: "quote", pickupIso: when.iso, intent };
+  }
+
+  const quotePence = toPence(quote?.grossAmount ?? quote?.gross ?? null);
+  const bandPence = toPence(quote?.bandPrice ?? null);
+  const verdict = priceVerdict({ quotePence, bandPence, settings: b });
+
+  if (!verdict.ok) {
+    return {
+      act: "flag",
+      reason: verdict.reason,
+      quotePence,
+      attributes: reviewAttributes({
+        note: `${verdict.note} Not booked automatically — book by hand if you are happy with it.`,
+        quotePence,
+        now,
+      }),
+    };
+  }
+
+  if (!b.auto_book) {
+    return {
+      act: "flag",
+      reason: "auto_book_off",
+      quotePence,
+      attributes: reviewAttributes({
+        note: `Quoted ${verdict.note} Automatic booking is switched off, so no rider has been booked.`,
+        quotePence,
+        now,
+      }),
+    };
+  }
+
+  return {
+    act: "book",
+    pickupIso: when.iso,
+    quotePence,
+    marginPence: verdict.marginPence,
+    intent,
+  };
+}
