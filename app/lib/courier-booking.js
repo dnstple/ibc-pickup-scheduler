@@ -100,6 +100,37 @@ export const DEFAULT_BOOKING = {
    * runs is not bookable, however good the price. Payment delays, a retried
    * webhook and a customer who left the tab open all produce one. */
   grace_minutes: 15,
+
+  /* PACKAGING, WHICH SHOPIFY DOES NOT KNOW ABOUT.
+   *
+   * `order.totalWeight` is the sum of the product weights and nothing else.
+   * The box, the padding, the ribbon and the ice pack in July all weigh
+   * something, and the courier carries them too. Under-declaring means Gophr
+   * chooses a vehicle for a lighter parcel than the one the rider is handed.
+   *
+   * TWO NUMBERS, BECAUSE ONE IS WRONG AT BOTH ENDS. A percentage alone
+   * under-counts a single slice — a 220g slice in a box is nearer 370g, which
+   * is 68%, not 10% — while a flat weight alone over-counts a big order that
+   * is mostly its own contents. So: a fixed weight for the packaging itself,
+   * plus a percentage for padding that scales with what is being padded. */
+  packaging_grams: 150,
+  packaging_percent: 10,
+
+  /* WHERE THE COURIER COLLECTS.
+   *
+   * These were a hard-coded constant in gophr.server.js, under a comment
+   * promising to move them into settings "in the next increment". They did
+   * not move, and a shop address living in code is a shop address that is
+   * wrong the day anybody moves, opens a second counter, or sends a courier
+   * to a kitchen rather than a shop front.
+   *
+   * Note this is the SAME PLACE as the collection point customers walk to,
+   * spelled separately. If the shop moves, both need changing — which is a
+   * worse arrangement than one copy, and a better one than a copy in code. */
+  pickup_name: "Italian Bear Chocolate",
+  pickup_address1: "29 Rathbone Place",
+  pickup_city: "London",
+  pickup_postcode: "W1T 1JG",
 };
 
 export function normalizeBooking(raw) {
@@ -121,11 +152,19 @@ export function normalizeBooking(raw) {
    * NaN and would have fallen back. It is null, "" and [] that lie, and they
    * are exactly what a half-saved settings blob contains. Absence is tested
    * for first, before the number is read. */
-  for (const key of ["headroom_pence", "ceiling_pence", "pickup_offset_minutes", "grace_minutes"]) {
+  for (const key of [
+    "headroom_pence", "ceiling_pence", "pickup_offset_minutes", "grace_minutes",
+    "packaging_grams", "packaging_percent",
+  ]) {
     const raw = b[key];
     const absent = raw === null || raw === undefined || raw === "";
     const n = absent ? NaN : Number(raw);
     b[key] = Number.isFinite(n) ? Math.floor(n) : DEFAULT_BOOKING[key];
+  }
+
+  for (const key of ["pickup_name", "pickup_address1", "pickup_city", "pickup_postcode"]) {
+    const value = String(b[key] ?? "").trim();
+    b[key] = value || DEFAULT_BOOKING[key];
   }
 
   return b;
@@ -151,6 +190,21 @@ export function validateBooking(b) {
   }
   if (!Number.isInteger(b.grace_minutes) || b.grace_minutes < 0 || b.grace_minutes > 240) {
     errors["booking.grace_minutes"] = "Enter between 0 and 240 minutes.";
+  }
+  if (!Number.isInteger(b.packaging_grams) || b.packaging_grams < 0 || b.packaging_grams > 5000) {
+    errors["booking.packaging_grams"] = "Enter between 0 and 5000 grams.";
+  }
+  if (!Number.isInteger(b.packaging_percent) ||
+      b.packaging_percent < 0 || b.packaging_percent > 100) {
+    errors["booking.packaging_percent"] = "Enter between 0 and 100 per cent.";
+  }
+  /* A postcode is the one field a courier genuinely cannot work without. */
+  if (!String(b.pickup_postcode || "").trim()) {
+    errors["booking.pickup_postcode"] =
+      "The courier needs a postcode to collect from.";
+  }
+  if (!String(b.pickup_address1 || "").trim()) {
+    errors["booking.pickup_address1"] = "Enter the street address the courier collects from.";
   }
 
   /* NOT AN ERROR, BUT WORTH SAYING. A ceiling below the most expensive zone
@@ -234,6 +288,27 @@ export function existingBooking(order) {
      * deals with them. Re-running on every retry would re-quote forever. */
     settled: Boolean(jobId) || status === STATUS.REVIEW || status === STATUS.FAILED,
   };
+}
+
+/* ------------------------------------------------------------------ weight */
+
+/**
+ * What the rider actually picks up, in grams.
+ *
+ * Shopify's `totalWeight` is the products and nothing else. This adds the
+ * packaging: a percentage of the contents for padding, plus a flat weight for
+ * the box itself.
+ *
+ * The floor is deliberate. An order of products with no weights set reads as
+ * 0g, and a parcel declared at zero is a parcel Gophr will happily give to a
+ * pushbike. Falling back to a sensible default is safer than believing a
+ * number that means "nobody filled this in".
+ */
+export function packedGrams(contentsGrams, settings) {
+  const b = normalizeBooking(settings);
+  const contents = Number(contentsGrams);
+  const real = Number.isFinite(contents) && contents > 0 ? contents : 500;
+  return Math.round(real * (1 + b.packaging_percent / 100)) + b.packaging_grams;
 }
 
 /* ------------------------------------------------------------------ phones */

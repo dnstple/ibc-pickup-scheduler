@@ -32,6 +32,7 @@ import {
   failedAttributes,
   normalizeBooking,
   normalizeMobile,
+  packedGrams,
 } from "../lib/courier-booking.js";
 import { bookJob, parcelFor, GophrError } from "../lib/gophr.server.js";
 import { fulfilWithTracking } from "../lib/fulfilment.server.js";
@@ -182,15 +183,20 @@ const BULKY_GRAMS = 1500;
  * something other than good intentions. The metafield is still honoured for
  * any shop that uses it, but it is no longer the only thing asked.
  */
-function parcelFrom(order) {
-  const grams = Number(order?.totalWeight);
-  const heavy = Number.isFinite(grams) && grams >= BULKY_GRAMS;
+function parcelFrom(order, booking) {
+  /* PACKED, NOT BARE. The weight declared to Gophr is what the rider is
+   * handed — contents plus the box — and the same figure decides whether the
+   * big box is needed, because that decision is about what is being carried
+   * rather than what was sold. A 1.4kg order is under the threshold; the same
+   * order boxed is over it, and the boxed one is the truth. */
+  const grams = packedGrams(Number(order?.totalWeight), booking);
+  const heavy = grams >= BULKY_GRAMS;
   const flagged = (order?.lineItems?.nodes || []).some(
     (line) => Number(line?.product?.perishable?.value) > 60
   );
   const perishable = heavy || flagged;
   return parcelFor({
-    grams: Number.isFinite(grams) && grams > 0 ? grams : 500,
+    grams,
     perishable,
     id: `ibc-${orderRef(order)}`,
   });
@@ -297,10 +303,16 @@ export const action = async ({ request }) => {
     const result = await bookJob(
       {
         destination,
-        parcel: parcelFrom(order),
+        parcel: parcelFrom(order, booking),
         earliestPickup: first.pickupIso,
         externalId: orderRef(order),
         reference: order.name || undefined,
+        origin: {
+          name: booking.pickup_name,
+          address1: booking.pickup_address1,
+          city: booking.pickup_city,
+          postcode: booking.pickup_postcode,
+        },
         dropoffNotes: first.intent?.label
           ? `Delivery window: ${first.intent.label}`
           : undefined,

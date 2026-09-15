@@ -24,6 +24,7 @@ import {
   retryVerdict,
   gophrInstant,
   normalizeMobile,
+  packedGrams,
 } from "../app/lib/courier-booking.js";
 
 /* An order as Shopify's GraphQL returns it, with only the parts that matter. */
@@ -671,4 +672,79 @@ test("a London landline is not mangled into a mobile", () => {
   /* 02071234567 is eleven digits starting 0, so it converts — correctly, to
    * +442071234567. The rule is about UK numbers, not about mobiles. */
   assert.equal(normalizeMobile("02071234567"), "+442071234567");
+});
+
+/* ------------------------------------------------------------------ packaging */
+
+test("SHOPIFY'S WEIGHT IS THE PRODUCTS AND NOTHING ELSE", () => {
+  /* The box, the padding and the ribbon are carried by the rider too, and
+   * under-declaring means Gophr picks a vehicle for a lighter parcel than
+   * the one it is handed. */
+  assert.equal(packedGrams(2100, {}), 2460);   // whole cake, boxed
+  assert.equal(packedGrams(220, {}), 392);     // one slice, boxed
+});
+
+test("a percentage alone would under-count a small order", () => {
+  /* 10% of a 220g slice is 22g, and no box weighs 22g. The flat weight is
+   * what makes the small end honest; the percentage is what keeps the big
+   * end from being over-stated. */
+  const percentOnly = packedGrams(220, { packaging_grams: 0, packaging_percent: 10 });
+  const both = packedGrams(220, {});
+  assert.equal(percentOnly, 242);
+  assert.ok(both > percentOnly + 100);
+});
+
+test("both numbers are adjustable and either can be switched off", () => {
+  assert.equal(packedGrams(1000, { packaging_grams: 0, packaging_percent: 0 }), 1000);
+  assert.equal(packedGrams(1000, { packaging_grams: 500, packaging_percent: 0 }), 1500);
+  assert.equal(packedGrams(1000, { packaging_grams: 0, packaging_percent: 25 }), 1250);
+});
+
+test("AN ORDER WITH NO WEIGHTS SET DOES NOT BECOME A ZERO-GRAM PARCEL", () => {
+  /* A parcel declared at nothing is one Gophr will happily give a pushbike.
+   * A missing weight means "nobody filled this in", not "it weighs nothing". */
+  assert.equal(packedGrams(0, {}), 700);
+  assert.equal(packedGrams(null, {}), 700);
+  assert.equal(packedGrams(undefined, {}), 700);
+  assert.equal(packedGrams("nonsense", {}), 700);
+});
+
+test("packaging can push an order over the bulky threshold, and should", () => {
+  /* 1.4kg of chocolate is under 1.5kg. The same order in a box is not, and
+   * the boxed figure is the one the rider carries. */
+  assert.ok(packedGrams(1400, {}) >= 1500);
+  assert.ok(packedGrams(1200, {}) < 1500);
+});
+
+/* ------------------------------------------------------------------ pickup */
+
+test("THE SHOP ADDRESS IS A SETTING, NOT A CONSTANT", () => {
+  /* It lived in gophr.server.js under a comment promising to move it into
+   * settings. It did not move, and an address in code is wrong the day the
+   * shop does. */
+  const b = normalizeBooking({});
+  assert.equal(b.pickup_address1, "29 Rathbone Place");
+  assert.equal(b.pickup_postcode, "W1T 1JG");
+
+  const moved = normalizeBooking({ pickup_address1: "1 New Street", pickup_postcode: "W1A 1AA" });
+  assert.equal(moved.pickup_address1, "1 New Street");
+  assert.equal(moved.pickup_postcode, "W1A 1AA");
+});
+
+test("a blank address falls back rather than sending a courier nowhere", () => {
+  const b = normalizeBooking({ pickup_address1: "   ", pickup_postcode: "" });
+  assert.equal(b.pickup_address1, "29 Rathbone Place");
+  assert.equal(b.pickup_postcode, "W1T 1JG");
+});
+
+test("but an address that cannot be saved blank is reported as an error", () => {
+  /* normalizeBooking backfills, so validate is checked against a raw block —
+   * the shape the form hands over before it is normalised. */
+  const errors = validateBooking({ ...normalizeBooking({}), pickup_postcode: "" });
+  assert.ok(errors["booking.pickup_postcode"]);
+});
+
+test("packaging settings are validated", () => {
+  assert.ok(validateBooking(normalizeBooking({ packaging_percent: 500 }))["booking.packaging_percent"]);
+  assert.deepEqual(validateBooking(normalizeBooking({ packaging_percent: 15 })), {});
 });

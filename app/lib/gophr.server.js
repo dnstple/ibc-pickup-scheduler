@@ -409,13 +409,21 @@ export function buildJobBody({
   reference = null,
   pickupNotes = null,
   dropoffNotes = null,
+  /* WHERE THE COURIER COLLECTS, supplied by the caller.
+   *
+   * PICKUP remains as the default so the test bench and anything else that
+   * does not care keeps working. But a shop address belongs in settings, not
+   * in a constant: the constant is wrong the day the shop moves, and nobody
+   * finds out until a rider is standing outside the old door. */
+  origin = null,
 }) {
+  const from = { ...PICKUP, ...(origin || {}) };
   const pickup = {
-    pickup_address1: PICKUP.address1,
-    pickup_city: PICKUP.city,
-    pickup_postcode: PICKUP.postcode,
-    pickup_country_code: PICKUP.country_code,
-    pickup_person_name: PICKUP.name,
+    pickup_address1: from.address1,
+    pickup_city: from.city,
+    pickup_postcode: from.postcode,
+    pickup_country_code: from.country_code || "GB",
+    pickup_person_name: from.name,
     pickup_mobile_number: pickupMobile(),
     parcels: [parcel],
   };

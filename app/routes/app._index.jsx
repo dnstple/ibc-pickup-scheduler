@@ -580,6 +580,104 @@ function BookingCard({ booking, sameday, errors, updateBooking }) {
 
         <Divider />
 
+        <BlockStack gap="150">
+          <Text as="h4" variant="headingSm">Where the courier collects</Text>
+          <Text as="p" tone="subdued" variant="bodySm">
+            This is the same place customers collect from, spelled separately. If the
+            shop moves, change it here as well as on the collection point.
+          </Text>
+        </BlockStack>
+
+        <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+          <TextField
+            label="Name the rider asks for"
+            value={b.pickup_name ?? ""}
+            onChange={(v) => updateBooking({ pickup_name: v })}
+            autoComplete="off"
+          />
+          <TextField
+            label="Street address"
+            value={b.pickup_address1 ?? ""}
+            onChange={(v) => updateBooking({ pickup_address1: v })}
+            error={errors["booking.pickup_address1"]}
+            autoComplete="off"
+          />
+          <TextField
+            label="Town or city"
+            value={b.pickup_city ?? ""}
+            onChange={(v) => updateBooking({ pickup_city: v })}
+            autoComplete="off"
+          />
+          <TextField
+            label="Postcode"
+            value={b.pickup_postcode ?? ""}
+            onChange={(v) => updateBooking({ pickup_postcode: v })}
+            error={errors["booking.pickup_postcode"]}
+            helpText="The one field a courier genuinely cannot work without."
+            autoComplete="off"
+          />
+        </InlineGrid>
+
+        <Divider />
+
+        <BlockStack gap="150">
+          <Text as="h4" variant="headingSm">Packaging</Text>
+          <Text as="p" tone="subdued" variant="bodySm">
+            Shopify&rsquo;s order weight is the products and nothing else. The box, the
+            padding and the ribbon are carried by the rider too, and Gophr picks the
+            vehicle from what it is told.
+          </Text>
+        </BlockStack>
+
+        <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+          <TextField
+            label="Add this much for the box itself (grams)"
+            type="number"
+            min={0}
+            max={5000}
+            value={String(b.packaging_grams ?? 150)}
+            onChange={(v) => updateBooking({ packaging_grams: Number(v) })}
+            error={errors["booking.packaging_grams"]}
+            helpText="A flat weight. This is what makes a single slice honest."
+            autoComplete="off"
+          />
+          <TextField
+            label="And this much of the contents (%)"
+            type="number"
+            min={0}
+            max={100}
+            value={String(b.packaging_percent ?? 10)}
+            onChange={(v) => updateBooking({ packaging_percent: Number(v) })}
+            error={errors["booking.packaging_percent"]}
+            helpText="Padding scales with what is being padded."
+            autoComplete="off"
+          />
+        </InlineGrid>
+
+        <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+          <BlockStack gap="150">
+            <Text as="p" variant="bodySm" fontWeight="semibold">
+              What gets declared to Gophr
+            </Text>
+            {[
+              { what: "One cake slice", grams: 220 },
+              { what: "A whole cake", grams: 2100 },
+            ].map((row) => {
+              const packed =
+                Math.round(row.grams * (1 + Number(b.packaging_percent ?? 10) / 100)) +
+                Number(b.packaging_grams ?? 150);
+              return (
+                <Text as="p" key={row.what} variant="bodySm">
+                  {row.what} — {row.grams}g of chocolate, declared as{" "}
+                  <Text as="span" fontWeight="semibold">{packed}g</Text>
+                </Text>
+              );
+            })}
+          </BlockStack>
+        </Box>
+
+        <Divider />
+
         <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
           <TextField
             label="Ask for the rider this many minutes before the window opens"
