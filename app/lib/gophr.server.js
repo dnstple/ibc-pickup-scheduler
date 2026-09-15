@@ -436,7 +436,22 @@ export function buildJobBody({
   if (destination.email) dropoff.dropoff_email = String(destination.email);
   if (dropoffNotes) dropoff.dropoff_instructions = String(dropoffNotes);
 
-  const body = { pickups: [pickup], dropoffs: [dropoff] };
+  const body = {
+    /* THE JOB'S OWN external_id, AT THE TOP LEVEL.
+     *
+     * Settled by a 422 carrying exactly one error: `"object": "external_id"`,
+     * "Field \"external id\" should not be empty" — while an `external_id`
+     * was already being sent on the dropoff. The unprefixed object name is
+     * the tell: pickup and dropoff fields come back named `pickup_postcode`
+     * and `dropoff_address1`, so a bare `external_id` is the job's.
+     *
+     * Both are kept. The dropoff's is what Gophr echoes on its status
+     * webhooks, per its own webhook documentation, so removing it would cost
+     * us the only handle tying a status update back to a Shopify order. */
+    external_id: String(externalId || ""),
+    pickups: [pickup],
+    dropoffs: [dropoff],
+  };
   if (reference) body.reference = String(reference);
   return body;
 }
