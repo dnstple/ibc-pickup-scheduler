@@ -324,6 +324,29 @@ export function priceVerdict({ quotePence, bandPence, settings }) {
  * that reads prices and dates out of sentences meant for people is a parser
  * that fails in a new locale on a quiet Sunday.
  */
+/**
+ * An instant in the shape Gophr will accept.
+ *
+ * `toISOString()` gives `2026-09-15T14:30:00.000Z`, and Gophr refuses it:
+ *
+ *   object:  pickups.0.earliest_pickup_time
+ *   message: The input does not appear to be a valid ISO8601 datetime
+ *            e.g. 2022-03-01T13:00:00+00:00
+ *
+ * Its own example is the specification. Two differences from what JavaScript
+ * produces, and the error does not say which one it minds, so both are fixed:
+ * the milliseconds go, and `Z` becomes the explicit `+00:00` offset. Both
+ * spell the same instant; only one gets through.
+ *
+ * WHY THE BENCH MISSED THIS. Every successful draft was created with the
+ * pickup set to "Right now", which omits `earliest_pickup_time` altogether.
+ * The field that broke was the one never sent — a reminder that a green test
+ * proves what it exercised and nothing else.
+ */
+export function gophrInstant(date) {
+  return date.toISOString().replace(/\.\d{3}Z$/, "+00:00");
+}
+
 export function pickupTime({ windowStart, settings, now = new Date() }) {
   const s = normalizeBooking(settings);
 
@@ -346,7 +369,7 @@ export function pickupTime({ windowStart, settings, now = new Date() }) {
    * one immediately, and "immediately" is the one answer the kitchen cannot
    * give. */
   const at = new Date(Math.max(wanted, nowMs));
-  return { iso: at.toISOString(), reason: null };
+  return { iso: gophrInstant(at), reason: null };
 }
 
 /* ------------------------------------------------------------------ writes */

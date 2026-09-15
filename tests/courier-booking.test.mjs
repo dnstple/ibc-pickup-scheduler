@@ -22,6 +22,7 @@ import {
   failedAttributes,
   courierPlan,
   retryVerdict,
+  gophrInstant,
 } from "../app/lib/courier-booking.js";
 
 /* An order as Shopify's GraphQL returns it, with only the parts that matter. */
@@ -277,7 +278,7 @@ test("the rider is asked for before the window opens, not during it", () => {
     settings: {},
     now: NOW,
   });
-  assert.equal(iso, "2026-09-15T13:30:00.000Z");
+  assert.equal(iso, "2026-09-15T13:30:00+00:00");
 });
 
 test("the offset is a setting, not a constant", () => {
@@ -286,7 +287,7 @@ test("the offset is a setting, not a constant", () => {
     settings: { pickup_offset_minutes: 90 },
     now: NOW,
   });
-  assert.equal(iso, "2026-09-15T12:30:00.000Z");
+  assert.equal(iso, "2026-09-15T12:30:00+00:00");
 });
 
 test("A RIDER IS NEVER ASKED FOR IN THE PAST", () => {
@@ -298,7 +299,7 @@ test("A RIDER IS NEVER ASKED FOR IN THE PAST", () => {
     settings: { pickup_offset_minutes: 90 },
     now: NOW,
   });
-  assert.equal(iso, NOW.toISOString());
+  assert.equal(iso, gophrInstant(NOW));
 });
 
 test("a window that has already gone is refused", () => {
@@ -318,7 +319,7 @@ test("the grace period covers a slow payment", () => {
     settings: {},
     now: NOW,
   });
-  assert.equal(iso, NOW.toISOString());
+  assert.equal(iso, gophrInstant(NOW));
 });
 
 test("a missing or unreadable window start is named, not guessed at", () => {
@@ -371,7 +372,7 @@ test("an ordinary order is ignored before anything is quoted", () => {
 test("a same-day order asks to be quoted first", () => {
   const plan = courierPlan({ order: sameday(), booking: {}, now: NOW });
   assert.equal(plan.act, "quote");
-  assert.equal(plan.pickupIso, "2026-09-15T13:30:00.000Z");
+  assert.equal(plan.pickupIso, "2026-09-15T13:30:00+00:00");
 });
 
 test("AN ALREADY-BOOKED ORDER IS IGNORED — Shopify retries this webhook", () => {
@@ -420,7 +421,7 @@ test("with automatic booking ON, a good quote books", () => {
   assert.equal(plan.act, "book");
   assert.equal(plan.quotePence, 980);
   assert.equal(plan.marginPence, 315);
-  assert.equal(plan.pickupIso, "2026-09-15T13:30:00.000Z");
+  assert.equal(plan.pickupIso, "2026-09-15T13:30:00+00:00");
 });
 
 test("THE CIRCUIT BREAKER BEATS auto_book", () => {
@@ -547,7 +548,7 @@ test("THE OFFSET SETTING REACHES THE PICKUP TIME THROUGH courierPlan", () => {
     now: NOW,
   });
   assert.equal(plan.act, "quote");
-  assert.equal(plan.pickupIso, "2026-09-15T12:30:00.000Z");
+  assert.equal(plan.pickupIso, "2026-09-15T12:30:00+00:00");
 });
 
 /* ------------------------------------------------------------- draft vs booked */
@@ -608,4 +609,30 @@ test("and clears them when there are none, rather than keeping stale ones", () =
   const attrs = bookedAttributes({ job: { jobId: "JOB-9" }, quotePence: 900, now: NOW });
   assert.equal(attrs.ibc_courier_tracking_url, null);
   assert.equal(attrs.ibc_courier_job_url, null);
+});
+
+/* ------------------------------------------------------------- gophr instants */
+
+test("GOPHR REFUSES WHAT toISOString() PRODUCES", () => {
+  /* Its own error names the format it wants: "2022-03-01T13:00:00+00:00".
+   * No milliseconds, explicit offset. JavaScript gives neither. */
+  const d = new Date("2026-09-15T14:30:00.000Z");
+  assert.equal(d.toISOString(), "2026-09-15T14:30:00.000Z");
+  assert.equal(gophrInstant(d), "2026-09-15T14:30:00+00:00");
+});
+
+test("the shape matches Gophr's worked example exactly", () => {
+  const pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/;
+  assert.match(gophrInstant(new Date("2022-03-01T13:00:00Z")), pattern);
+  assert.match(gophrInstant(new Date()), pattern);
+  /* And every pickup time the planner emits goes through it. */
+  const plan = courierPlan({ order: sameday(), booking: {}, now: NOW });
+  assert.match(plan.pickupIso, pattern);
+});
+
+test("no milliseconds survive, whatever the input", () => {
+  for (const ms of [0, 1, 999]) {
+    const d = new Date(Date.UTC(2026, 8, 15, 14, 30, 0, ms));
+    assert.equal(gophrInstant(d).includes("."), false, `ms=${ms}`);
+  }
 });
