@@ -41,6 +41,7 @@ import {
   confirmJob,
   cancelJob,
   progressDelivery,
+  probeDeadline,
   CONFIRM_BODY,
   pickupMobile,
   GophrError,
@@ -180,6 +181,7 @@ export const action = async ({ request }) => {
   const intent = form.get("intent");
   const armed = isArmed(form);   /* ⚠️ LIVE TEST — delete with its block */
   if (intent === "cancel") return cancelTestJob(form.get("jobId"));
+  if (intent === "deadline") return probeDeadlineField(form.get("deadlineMinutes"));
   if (intent === "draft") return draftTestJob({ perishable, when, armed });
   if (intent === "confirm") {
     return confirmTestJob(form.get("jobId"), form.get("confirmBody"), armed);
@@ -334,6 +336,45 @@ async function cancelTestJob(jobId) {
   }
 }
 /* ==== END LIVE TEST BLOCK ================================================ */
+
+/**
+ * Which field sets a deadline, and what it costs.
+ *
+ * Quotes only — nothing is booked, nothing is charged, so this is safe to run
+ * against the live account and only useful there, because sandbox prices are
+ * not what anybody pays.
+ */
+async function probeDeadlineField(rawMinutes) {
+  const minutes = Math.max(30, Math.min(Number(rawMinutes) || 90, 600));
+  const deadline = new Date(Date.now() + minutes * 60000)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "+00:00");
+
+  try {
+    const found = await probeDeadline({
+      destination: {
+        name: "Test Recipient",
+        mobile: pickupMobile(),
+        address1: "Bow Street",
+        city: "London",
+        postcode: "WC2E 9DD",
+        country_code: "GB",
+      },
+      parcel: parcelFor({ grams: 2100, perishable: true, id: `ibc-deadline-${Date.now()}` }),
+      deadlineIso: deadline,
+    });
+    return { deadline: { ok: true, minutes, ...found } };
+  } catch (error) {
+    return {
+      deadline: {
+        ok: false,
+        minutes,
+        message: error.message,
+        body: error instanceof GophrError ? error.body : undefined,
+      },
+    };
+  }
+}
 
 /* The sandbox guard, spelled once. It REFUSES rather than warns: a bench whose
  * whole purpose is to send half-understood requests until one sticks has no
@@ -532,6 +573,8 @@ export default function Courier() {
    * leave the quote table rendering the previous run's rows as if they were
    * fresh. */
   const booking = fetcher.data?.booking || null;
+  const deadline = fetcher.data?.deadline || null;
+  const [deadlineMinutes, setDeadlineMinutes] = useState("90");
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
   const [draftId, setDraftId] = useState("");
@@ -782,6 +825,86 @@ export default function Courier() {
               <Text as="p" tone="subdued" variant="bodySm">
                 Request shape: {SHAPE_VERSION}
               </Text>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        {/* ------------------------------------------------- deadline probe */}
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">What does a deadline cost?</Text>
+              <Banner tone="warning" title="Right now we send no deadline at all">
+                <Text as="p">
+                  Gophr defaults to the end of the day — a live job booked for a
+                  15:38–16:38 window was given until <Text as="span" fontWeight="semibold">
+                  23:55</Text>, and the rider took other work while the ETA slid. The
+                  customer&rsquo;s window is chosen in the basket and then never passed on.
+                </Text>
+              </Banner>
+              <Text as="p" tone="subdued" variant="bodySm">
+                Gophr sells &ldquo;book to a chosen deadline&rdquo; and documents no field
+                for it. This sends the same journey seven times — once bare, then once
+                per candidate name. Gophr <Text as="span" fontWeight="semibold">ignores
+                fields it does not know</Text>, which was established by the very first
+                422, so a wrong guess returns the baseline price unchanged. The name that
+                MOVES the price is the real one. Quotes only: nothing is booked.
+              </Text>
+
+              <InlineStack gap="300" blockAlign="end">
+                <Box minWidth="180px">
+                  <TextField
+                    label="Deadline, minutes from now"
+                    type="number"
+                    value={deadlineMinutes}
+                    onChange={setDeadlineMinutes}
+                    autoComplete="off"
+                  />
+                </Box>
+                <Button
+                  onClick={() =>
+                    fetcher.submit({ intent: "deadline", deadlineMinutes }, { method: "POST" })
+                  }
+                  loading={running}
+                  disabled={!status.configured}
+                >
+                  Probe
+                </Button>
+              </InlineStack>
+
+              {deadline && deadline.ok && (
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+                  <BlockStack gap="150">
+                    {deadline.results.map((r) => (
+                      <InlineStack key={r.label} gap="200" blockAlign="center" wrap={false}>
+                        <Badge tone={r.error ? "attention" : r.changed ? "success" : undefined}>
+                          {r.error ? "error" : r.changed ? "THIS ONE" : "ignored"}
+                        </Badge>
+                        <Text as="span" variant="bodySm">
+                          <Text as="span" fontWeight="semibold">{r.label}</Text>
+                          {" — "}
+                          {r.amount != null ? `£${r.amount.toFixed(2)}` : (r.error || "no price")}
+                          {r.delta ? ` (${r.delta > 0 ? "+" : ""}£${r.delta.toFixed(2)})` : ""}
+                        </Text>
+                      </InlineStack>
+                    ))}
+                    {deadline.results.every((r) => !r.changed && !r.error) && (
+                      <Text as="p" variant="bodySm">
+                        Every candidate was ignored, so none of them is the name. Either the
+                        deadline lives on the JOB rather than the dropoff, or it is only
+                        honoured when booking rather than when quoting — in which case it
+                        costs nothing extra and we should simply always send it.
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Box>
+              )}
+
+              {deadline && !deadline.ok && (
+                <Banner tone="critical" title="Probe failed">
+                  <Text as="p">{deadline.message}</Text>
+                </Banner>
+              )}
             </BlockStack>
           </Card>
         </Layout.Section>

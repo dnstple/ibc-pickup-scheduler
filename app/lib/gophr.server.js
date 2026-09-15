@@ -646,6 +646,87 @@ export async function bookJob(options, { approve = null, confirmBody } = {}) {
  * that sometimes refuses is harder to reason about than one that always does
  * what it says.
  */
+/**
+ * What a DEADLINE costs.
+ *
+ * Gophr sells "book to a chosen deadline" and documents no field for it. The
+ * live job that prompted this was quoted with no deadline at all, so Gophr
+ * defaulted to 23:55 and the rider — entirely within his rights — kept taking
+ * other work while the ETA slid. The customer's window was never passed on.
+ *
+ * THE PROBE EXPLOITS SOMETHING ALREADY PROVEN: Gophr IGNORES fields it does
+ * not recognise rather than rejecting them. That was established by the first
+ * 422, which complained only about what was missing and never about the
+ * `sequence`, `address` and `contact` objects that had no business being
+ * there. So a wrong guess is free and silent, and the name that is RIGHT is
+ * the one whose price differs from the baseline.
+ *
+ * Each candidate is sent on its own, against the same journey, seconds apart.
+ * Returns the baseline and every variant so the difference speaks for itself.
+ */
+export const DEADLINE_FIELDS = [
+  /* Symmetry with `earliest_pickup_time`, which is unprefixed and sits inside
+   * the pickup object. The dropoff mirror of that name is the strongest
+   * guess, so it goes first. */
+  "latest_dropoff_time",
+  "dropoff_deadline",
+  "deadline_time",
+  "delivery_deadline",
+  "dropoff_before",
+  "latest_delivery_time",
+];
+
+export async function probeDeadline({ destination, parcel, deadlineIso }) {
+  const results = [];
+
+  /* The baseline, taken from the SAME journey seconds earlier. A price
+   * compared against yesterday's quote for somewhere else would prove
+   * nothing. */
+  const base = await quote({ destination, parcel });
+  results.push({
+    field: null,
+    label: "no deadline (what we send today)",
+    amount: base.price?.gross?.amount ?? base.price?.amount ?? null,
+    request: base.request,
+  });
+
+  for (const field of DEADLINE_FIELDS) {
+    const body = buildQuoteBody({ destination, parcel });
+    /* On the DROPOFF, because that is the end being deadlined. */
+    body.dropoffs[0][field] = deadlineIso;
+    try {
+      const payload = await call("/quotes", { method: "POST", body });
+      const price = readQuote(payload);
+      results.push({
+        field,
+        label: field,
+        amount: price?.gross?.amount ?? price?.amount ?? null,
+        request: body,
+      });
+    } catch (error) {
+      /* An error is INFORMATIVE here, not a failure: a field Gophr complains
+       * about is a field it knows the name of. */
+      results.push({
+        field,
+        label: field,
+        amount: null,
+        error: error.message,
+        body: error instanceof GophrError ? error.body : undefined,
+        request: body,
+      });
+    }
+  }
+
+  const baseline = results[0].amount;
+  for (const r of results) {
+    r.changed = r.amount !== null && baseline !== null && r.amount !== baseline;
+    r.delta = r.amount !== null && baseline !== null
+      ? Number((r.amount - baseline).toFixed(2))
+      : null;
+  }
+  return { baseline, deadlineIso, results };
+}
+
 export async function progressDelivery(jobId, deliveryId, body = {}) {
   if (!jobId || !deliveryId) {
     throw new GophrError("Both a job id and a delivery id are needed to progress a delivery.");
