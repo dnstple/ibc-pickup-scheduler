@@ -459,20 +459,34 @@ function BookingCard({ booking, sameday, errors, updateBooking }) {
 
   const pounds = (pence) => `£${(Number(pence || 0) / 100).toFixed(2)}`;
 
-  /* What each zone could actually cost the shop before a job is held back. */
+  /* What each zone could actually cost the shop before a job is held back,
+   * and WHICH OF THE THREE RULES stops it.
+   *
+   * The first version of this named only two — the ceiling, or vaguely "the
+   * band" — which mislabelled the most useful configuration there is. Setting
+   * the multiple to 1.0 and leaving a flat headroom expresses the policy most
+   * shops actually hold ("whatever they paid, plus a fiver"), and the card
+   * would have called that "held by the multiple" while the multiple was
+   * doing nothing at all. A readout that names the wrong cause is worse than
+   * no readout: it sends you to adjust the field that is not the constraint. */
   const bands = (sameday?.zones || []).map((zone) => {
     const band = Math.round(Number(String(zone.price || "0").replace(/[^0-9.]/g, "")) * 100);
-    const byMultiple = Math.max(Math.round(band * multiple), band + headroom);
-    const allowed = Math.min(byMultiple, ceiling);
-    return {
-      id: zone.id,
-      band,
-      allowed,
-      /* Which of the two rules actually bites. A zone where the ceiling never
-       * binds is a zone the ceiling is not protecting. */
-      binding: ceiling < byMultiple ? "ceiling" : "band",
-    };
+    const byMultiple = Math.round(band * multiple);
+    const byHeadroom = band + headroom;
+    const generous = Math.max(byMultiple, byHeadroom);
+    const allowed = Math.min(generous, ceiling);
+
+    let binding = "ceiling";
+    if (ceiling >= generous) binding = byMultiple >= byHeadroom ? "multiple" : "headroom";
+
+    return { id: zone.id, band, allowed, binding };
   });
+
+  const BINDING_LABEL = {
+    ceiling: "held by the hard ceiling",
+    multiple: "held by the multiple",
+    headroom: "held by the £ allowance",
+  };
 
   return (
     <Card>
@@ -551,12 +565,10 @@ function BookingCard({ booking, sameday, errors, updateBooking }) {
                   <Text as="span" fontWeight="semibold">Zone {z.id}</Text> — charged{" "}
                   {pounds(z.band)}, books itself up to{" "}
                   <Text as="span" fontWeight="semibold">{pounds(z.allowed)}</Text>{" "}
-                  <Text as="span" tone="subdued">
-                    ({z.binding === "ceiling" ? "held by the hard ceiling" : "held by the multiple"})
-                  </Text>
+                  <Text as="span" tone="subdued">({BINDING_LABEL[z.binding]})</Text>
                 </Text>
               ))}
-              {bands.every((z) => z.binding === "band") && (
+              {bands.every((z) => z.binding !== "ceiling") && (
                 <Text as="p" variant="bodySm" tone="subdued">
                   The hard ceiling never bites on any of your zones, so it is doing
                   nothing. Lower it if you want it to be a real limit.
