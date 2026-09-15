@@ -21,6 +21,7 @@ import {
   Button,
   Card,
   DataTable,
+  Divider,
   InlineStack,
   Layout,
   List,
