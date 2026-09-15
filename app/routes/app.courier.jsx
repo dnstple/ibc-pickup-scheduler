@@ -367,7 +367,7 @@ export default function Courier() {
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
   const [draftId, setDraftId] = useState("");
-  const [confirmBody, setConfirmBody] = useState('{"status":"confirmed"}');
+  const [confirmBody, setConfirmBody] = useState('{"is_confirmed":1}');
   if (booking?.step === "draft" && booking.ok && booking.job?.jobId &&
       booking.job.jobId !== draftId) {
     setDraftId(booking.job.jobId);
@@ -687,7 +687,7 @@ export default function Courier() {
                   onChange={setConfirmBody}
                   multiline={2}
                   autoComplete="off"
-                  helpText={'Try {"status":"confirmed"}, then {"confirmed":true}, then {} if those fail.'}
+                  helpText={'The draft comes back carrying is_confirmed: 0, so this sets it to 1. If that is refused, read what it asks for and try again here — no redeploy.'}
                 />
                 <InlineStack gap="300">
                   <Button

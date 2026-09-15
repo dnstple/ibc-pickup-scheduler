@@ -459,10 +459,29 @@ export function buildJobBody({
 /**
  * Everything worth knowing from a job response.
  *
- * Written defensively for the same reason readQuote was: the shape is not
- * confirmed, and a booking that half-reads its own confirmation is worse than
- * one that reports nothing. Every field is null when absent — nothing here
- * invents an id.
+ * CONFIRMED SHAPE, from a real sandbox draft on 15 September 2026:
+ *
+ *   { data: { job_id, is_confirmed: 0, vehicle_type, distance,
+ *             price_net: {amount,currency}, price_gross: {amount,currency},
+ *             job_priority,
+ *             deliveries: [ { delivery_id, status, leg_type,
+ *                             private_job_url, public_tracker_url,
+ *                             pickup_sequence_number, dropoff_sequence_number,
+ *                             parcels: [{parcel_id, parcel_external_id,
+ *                                        barcode_reference}] } ] } }
+ *
+ * TWO NAMES WERE GUESSED WRONG AND ARE FIXED HERE:
+ *
+ *   · the tracking link is `public_tracker_url` — trackER, not trackING, and
+ *     on the DELIVERY rather than the job. The first draft looked for
+ *     `tracking_url`, `public_tracking_url` and `url`, found none of them,
+ *     and would have booked riders no customer could follow.
+ *   · `private_job_url` is the shop's own link into Gophr's job management.
+ *     Not guessed at all, and it is the thing a human actually needs when an
+ *     order is flagged: one click to the job rather than an id to paste.
+ *
+ * Still read defensively. A booking that half-reads its own confirmation is
+ * worse than one that reports nothing, and nothing here invents an id.
  */
 export function readJob(payload) {
   const d = payload && typeof payload === "object" && payload.data ? payload.data : payload;
@@ -483,18 +502,37 @@ export function readJob(payload) {
     return null;
   };
 
+  /* `is_confirmed` is 0 or 1, and 0 is falsy — so this cannot be written as
+   * `Boolean(pick(...))`, which is how a draft would come back looking
+   * confirmed the day somebody tidied it. */
+  const confirmedRaw = d.is_confirmed ?? firstDelivery?.is_confirmed ?? null;
+
   return {
     jobId: pick("job_id", "id", "public_job_id"),
     deliveryId: pick("delivery_id"),
-    trackingUrl: pick("tracking_url", "public_tracking_url", "url"),
+    trackingUrl: pick("public_tracker_url", "tracking_url", "public_tracking_url"),
+    /* The shop's way in. Distinct from the tracker, which is the customer's. */
+    jobUrl: pick("private_job_url"),
     status: pick("status", "job_status"),
+    isConfirmed: confirmedRaw === null ? null : Number(confirmedRaw) === 1,
+    distance: typeof d.distance === "number" ? d.distance : null,
     price: readQuote(payload),
   };
 }
 
-/** The default confirm body. A guess, and labelled as one — the bench can
- * send anything else without a redeploy. */
-export const CONFIRM_BODY = { status: "confirmed" };
+/**
+ * The confirm body.
+ *
+ * `{ status: "confirmed" }` was the first guess and was never sent, because
+ * the draft's own response answered the question first: it comes back
+ * carrying `is_confirmed: 0`. A flag a resource reports about itself is the
+ * flag a PATCH sets, and 0/1 rather than false/true because that is how Gophr
+ * spelled it.
+ *
+ * The bench still sends this as free text, so if it is wrong the correction
+ * costs a click rather than a deploy.
+ */
+export const CONFIRM_BODY = { is_confirmed: 1 };
 
 /**
  * Step one: create the DRAFT.

@@ -586,3 +586,26 @@ test("only a confirmed job fills the job id field", () => {
   assert.equal(attrs.ibc_courier_job_id, "JOB-9");
   assert.equal(existingBooking(sameday(attrs)).alreadyBooked, true);
 });
+
+test("a booked order carries BOTH links — the customer's and the shop's", () => {
+  /* Gophr returns two: public_tracker_url, which the customer follows, and
+   * private_job_url, which is the shop's way into job management. They are
+   * different things and both are worth having on the order. */
+  const attrs = bookedAttributes({
+    job: {
+      jobId: "JOB-9",
+      trackingUrl: "https://gophr/tracking/1043402/x/delivery",
+      jobUrl: "https://gophr/job-management/1043402",
+    },
+    quotePence: 900,
+    now: NOW,
+  });
+  assert.match(attrs.ibc_courier_tracking_url, /tracking/);
+  assert.match(attrs.ibc_courier_job_url, /job-management/);
+});
+
+test("and clears them when there are none, rather than keeping stale ones", () => {
+  const attrs = bookedAttributes({ job: { jobId: "JOB-9" }, quotePence: 900, now: NOW });
+  assert.equal(attrs.ibc_courier_tracking_url, null);
+  assert.equal(attrs.ibc_courier_job_url, null);
+});

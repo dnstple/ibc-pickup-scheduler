@@ -263,10 +263,16 @@ export const action = async ({ request }) => {
            * look at the real price and confirm it in one click rather than
            * building the job again by hand. */
           ibc_courier_job_id: null,
+          /* THE DRAFT'S LINK, not its id. `private_job_url` comes back on
+           * every draft, so the shop gets one click through to the job
+           * instead of an id to paste into a portal. The id is kept beside
+           * it for when the link is the thing that has gone stale. */
+          ibc_courier_job_url: result.draft?.job?.jobUrl || null,
           ibc_courier_note:
             `${attributes.ibc_courier_note || "Not booked."} ` +
-            `A draft is waiting in Gophr as ${result.draft?.job?.jobId || "(no id)"} — ` +
-            `confirm it there if you are happy with the price.`,
+            `An unconfirmed draft is waiting in Gophr` +
+            `${result.draft?.job?.jobId ? ` (${result.draft.job.jobId})` : ""} — ` +
+            `open it and confirm there if you are happy with the price.`,
         },
         ["same-day", "courier-review"]
       );

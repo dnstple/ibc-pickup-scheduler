@@ -35,6 +35,7 @@ export const COURIER_WRITE_KEYS = [
   "ibc_courier_job_id",
   "ibc_courier_delivery_id",
   "ibc_courier_tracking_url",
+  "ibc_courier_job_url",
   "ibc_courier_quote_pence",
   "ibc_courier_booked_at",
   "ibc_courier_note",
@@ -357,6 +358,12 @@ export function bookedAttributes({ job, quotePence, now = new Date() }) {
     ibc_courier_job_id: String(job?.jobId ?? ""),
     ibc_courier_delivery_id: job?.deliveryId ? String(job.deliveryId) : null,
     ibc_courier_tracking_url: job?.trackingUrl ? String(job.trackingUrl) : null,
+    /* The SHOP'S link into Gophr, as distinct from the customer's tracker.
+     * `private_job_url` in Gophr's response. Worth carrying because the
+     * question an order raises at 4pm on a Saturday is "where is it", and the
+     * answer should be one click from the order rather than a hunt through a
+     * portal for an id. */
+    ibc_courier_job_url: job?.jobUrl ? String(job.jobUrl) : null,
     ibc_courier_quote_pence: Number.isFinite(quotePence) ? String(quotePence) : null,
     ibc_courier_booked_at: now.toISOString(),
     /* Cleared, not left standing. An order that failed, was fixed and then
