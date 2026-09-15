@@ -99,7 +99,7 @@ export const loader = async ({ request }) => {
     pickups: pickupOptions().map(({ value, label, iso }) => ({ value, label, iso })),
     journeys: TEST_JOURNEYS.map((j) => ({
       ...j,
-      zone: zoneForPostcode(j.postcode)?.id || null,
+      zone: zoneForPostcode(j.postcode, ZONES)?.id || null,
     })),
     zones: ZONES.map((z) => ({
       id: z.id,

@@ -68,22 +68,22 @@ test("nonsense returns null rather than a guess", () => {
 /* ------------------------------------------------------------------- zones */
 
 test("the shop's own postcode is in Zone A", () => {
-  assert.equal(zoneForPostcode("W1T 1JG")?.id, "A");
+  assert.equal(zoneForPostcode("W1T 1JG", ZONES)?.id, "A");
 });
 
 test("each test journey lands in the zone the scope claims", () => {
-  assert.equal(zoneForPostcode("W1K 3JA")?.id, "A");  // Mayfair
-  assert.equal(zoneForPostcode("WC2E 9DD")?.id, "A"); // Covent Garden
-  assert.equal(zoneForPostcode("EC2A 3AY")?.id, "B"); // Shoreditch
-  assert.equal(zoneForPostcode("SW11 4NJ")?.id, "C"); // Battersea
-  assert.equal(zoneForPostcode("NW3 1QG")?.id, "C");  // Hampstead
-  assert.equal(zoneForPostcode("SE16 4DG")?.id, "C"); // Bermondsey
+  assert.equal(zoneForPostcode("W1K 3JA", ZONES)?.id, "A");  // Mayfair
+  assert.equal(zoneForPostcode("WC2E 9DD", ZONES)?.id, "A"); // Covent Garden
+  assert.equal(zoneForPostcode("EC2A 3AY", ZONES)?.id, "B"); // Shoreditch
+  assert.equal(zoneForPostcode("SW11 4NJ", ZONES)?.id, "C"); // Battersea
+  assert.equal(zoneForPostcode("NW3 1QG", ZONES)?.id, "C");  // Hampstead
+  assert.equal(zoneForPostcode("SE16 4DG", ZONES)?.id, "C"); // Bermondsey
 });
 
 test("out of area returns null", () => {
-  assert.equal(zoneForPostcode("M1 1AA"), null);   // Manchester
-  assert.equal(zoneForPostcode("E14 5AB"), null);  // Canary Wharf, excluded on purpose
-  assert.equal(zoneForPostcode("W13 8AA"), null);  // Ealing
+  assert.equal(zoneForPostcode("M1 1AA", ZONES), null);   // Manchester
+  assert.equal(zoneForPostcode("E14 5AB", ZONES), null);  // Canary Wharf, excluded on purpose
+  assert.equal(zoneForPostcode("W13 8AA", ZONES), null);  // Ealing
 });
 
 test("no outward code appears in two zones", () => {

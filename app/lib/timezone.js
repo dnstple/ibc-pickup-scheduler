@@ -106,6 +106,19 @@ export function minutesToLabel(mins) {
   return mm === 0 ? `${h12}:00${suffix}` : `${h12}:${pad(mm)}${suffix}`;
 }
 
+// "2:00pm" + "3:00pm" -> "2:00–3:00pm"; "11:30am" + "12:00pm" -> "11:30am–12:00pm".
+//
+// Lives here rather than in availability.js because collection slots and
+// same-day delivery windows both spell a time range, and they appear in the
+// same drawer. Two copies of this rule is how "8:00–8:30pm" quietly becomes
+// "8:00pm–8:30pm" on one of them.
+export function rangeLabel(startMins, endMins) {
+  const start = minutesToLabel(startMins);
+  const end = minutesToLabel(endMins);
+  const sameSuffix = start.slice(-2) === end.slice(-2);
+  return sameSuffix ? `${start.slice(0, -2)}–${end}` : `${start}–${end}`;
+}
+
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",

@@ -8,6 +8,7 @@
 // Pure — no I/O, fully unit-testable.
 
 import { timeToMinutes, addDays, dateLabel } from "./timezone.js";
+import { DEFAULT_SAMEDAY, normalizeSameday, validateSameday } from "./sameday.js";
 
 // Sunday is 0 through Saturday is 6, matching JavaScript's getDay() and the
 // theme's data-delivery-closed-days attribute. Do not renumber this: the
@@ -42,6 +43,10 @@ export const DEFAULT_DELIVERY = {
   caution:
     "Shipping services can experience delays. We recommend delivering a day " +
     "earlier than you need.",
+  // The third shipping choice: a London courier, today. See lib/sameday.js.
+  // Nested here rather than beside `delivery` because it IS a delivery speed,
+  // and because the basket shows all three in one tile.
+  sameday: DEFAULT_SAMEDAY,
 };
 
 export function normalizeDelivery(raw) {
@@ -65,6 +70,7 @@ export function normalizeDelivery(raw) {
   ].sort((a, b) => a - b);
 
   d.blackout_dates = Array.isArray(d.blackout_dates) ? d.blackout_dates : [];
+  d.sameday = normalizeSameday(d.sameday);
 
   return d;
 }
@@ -73,11 +79,13 @@ export function validateDelivery(d) {
   const errors = {};
   if (!d.enabled) return errors; // nothing below matters when delivery is off
 
-  if (!d.standard_enabled && !d.dated_enabled) {
+  if (!d.standard_enabled && !d.dated_enabled && !d.sameday.enabled) {
     errors["delivery.enabled"] =
-      "Turn on standard shipping or dated delivery, or customers have no " +
-      "shipping choice at all.";
+      "Turn on standard shipping, dated delivery or same-day, or customers " +
+      "have no shipping choice at all.";
   }
+
+  Object.assign(errors, validateSameday(d.sameday));
 
   const lead = Number(d.lead_days);
   if (!Number.isInteger(lead) || lead < 0 || lead > 30) {

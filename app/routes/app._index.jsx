@@ -35,8 +35,10 @@ import {
 import {
   summarizeDelivery,
   earliestDeliveryDate,
+  weekdayIndex,
   WEEKDAY_INDEX_LABELS,
 } from "../lib/delivery";
+import { normalizeSameday, windowsFor } from "../lib/sameday";
 import { zonedParts, dateLabel } from "../lib/timezone";
 
 export const loader = async ({ request }) => {
@@ -143,7 +145,7 @@ export default function FulfilmentSettingsPage() {
     const keys = Object.keys(errors);
     const named = new Set();
     keys.forEach((key) => {
-      if (key.startsWith("delivery.")) named.add("Delivery");
+      if (key.startsWith("delivery.") || key.startsWith("sameday.")) named.add("Delivery");
       else if (key.startsWith("blackout_dates.")) named.add("Collection Closures");
       else if (key.startsWith("capacity_overrides.")) named.add("Collection Capacity");
       else named.add("Collection");
@@ -170,6 +172,35 @@ export default function FulfilmentSettingsPage() {
 
   const updateDelivery = useCallback((patch) => {
     setSettings((prev) => ({ ...prev, delivery: { ...prev.delivery, ...patch } }));
+    setDirty(true);
+  }, []);
+
+  // Same-day sits two levels down (settings.delivery.sameday), and its zones
+  // three, so each needs its own handler rather than the top-level ones.
+  const updateSameday = useCallback((patch) => {
+    setSettings((prev) => ({
+      ...prev,
+      delivery: {
+        ...prev.delivery,
+        sameday: { ...prev.delivery.sameday, ...patch },
+      },
+    }));
+    setDirty(true);
+  }, []);
+
+  const updateSamedayZone = useCallback((index, patch) => {
+    setSettings((prev) => ({
+      ...prev,
+      delivery: {
+        ...prev.delivery,
+        sameday: {
+          ...prev.delivery.sameday,
+          zones: prev.delivery.sameday.zones.map((z, i) =>
+            i === index ? { ...z, ...patch } : z
+          ),
+        },
+      },
+    }));
     setDirty(true);
   }, []);
 
@@ -338,6 +369,9 @@ export default function FulfilmentSettingsPage() {
             today={data.today}
             nowMinutes={data.nowMinutes}
             updateDelivery={updateDelivery}
+            updateSameday={updateSameday}
+            updateSamedayZone={updateSamedayZone}
+            weeklyHours={settings.weekly_hours}
             updateDeliveryBlackout={updateDeliveryBlackout}
             addDeliveryBlackout={addDeliveryBlackout}
             removeDeliveryBlackout={removeDeliveryBlackout}
@@ -394,6 +428,9 @@ function DeliveryTab({
   today,
   nowMinutes,
   updateDelivery,
+  updateSameday,
+  updateSamedayZone,
+  weeklyHours,
   updateDeliveryBlackout,
   addDeliveryBlackout,
   removeDeliveryBlackout,
@@ -597,6 +634,16 @@ function DeliveryTab({
             </BlockStack>
           </Card>
 
+          <SamedayCard
+            sameday={d.sameday || {}}
+            errors={errors}
+            weeklyHours={weeklyHours}
+            nowMinutes={nowMinutes}
+            today={today}
+            updateSameday={updateSameday}
+            updateSamedayZone={updateSamedayZone}
+          />
+
           <Card>
             <BlockStack gap="400">
               <Text as="h2" variant="headingMd">
@@ -773,6 +820,238 @@ function DeliveryTab({
         </BlockStack>
       </Layout.Section>
     </Layout>
+  );
+}
+
+
+/* ----------------------------------------------------------------------------
+   SAME-DAY COURIER
+   --------------------------------------------------------------------------
+   The third shipping choice, and the only one with a geography. Two things
+   make this card different from the rest of the tab:
+
+   1. THE POSTCODES ARE WRITTEN DOWN TWICE. Shopify's Local delivery settings
+      are what actually gate the rate at checkout; this copy lets the basket
+      answer "can you reach me?" before the customer gets there, with no
+      network call. Shopify's API does not expose local delivery at all, so
+      nothing can reconcile the two automatically — hence the banner.
+
+   2. IT IS OFF BY DEFAULT and stays off until switched on here. Until then
+      the basket shows two choices as it always has, and the delivery-gate
+      function's same-day branch is unreachable.
+   -------------------------------------------------------------------------- */
+
+function SamedayCard({
+  sameday,
+  errors,
+  weeklyHours,
+  nowMinutes,
+  today,
+  updateSameday,
+  updateSamedayZone,
+}) {
+  const s = sameday || {};
+  const zones = s.zones || [];
+  const on = s.enabled === true;
+
+  /* WHAT IT WOULD OFFER RIGHT NOW, from the same function the basket uses.
+     A list of rules is hard to read back; the windows they produce are not. */
+  const todayKey = today ? WEEKDAY_KEYS[weekdayIndex(today)] : null;
+  const openToday = todayKey && weeklyHours ? weeklyHours[todayKey] : null;
+  const preview = useMemo(
+    () => (on ? windowsFor(normalizeSameday(s), nowMinutes, openToday) : null),
+    [on, s, nowMinutes, openToday]
+  );
+
+  const NO_WINDOWS = {
+    closed_today: "the shop is closed today",
+    past_cutoff: `it is past the ${s.cutoff_time} cut-off`,
+    too_late_today: "there is not enough of the day left",
+    misconfigured: "the times are not valid",
+  };
+
+  const totalCodes = zones.reduce((n, z) => n + (z.outwards || []).length, 0);
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="h2" variant="headingMd">
+            Same-day courier &mdash; London
+          </Text>
+          {on ? <Badge tone="success">On</Badge> : <Badge>Off</Badge>}
+        </InlineStack>
+
+        <Checkbox
+          label="Offer same-day delivery"
+          checked={on}
+          onChange={(v) => updateSameday({ enabled: v })}
+          helpText="A third choice inside Shipping, beside next day and a chosen date. Off until you turn it on — nothing in the basket changes before then."
+        />
+
+        {on && (
+          <>
+            <Banner tone={preview?.windows?.length ? "success" : "warning"}>
+              <Text as="p">
+                {preview?.windows?.length
+                  ? `Right now this would offer ${preview.windows.length} ${
+                      preview.windows.length === 1 ? "window" : "windows"
+                    }: ${preview.windows.map((w) => w.label).join(" · ")}`
+                  : `Right now this would offer nothing, because ${
+                      NO_WINDOWS[preview?.reason] || "no window fits"
+                    }.`}
+              </Text>
+            </Banner>
+
+            <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
+              <TextField
+                label="Orders close at"
+                type="time"
+                value={s.cutoff_time || ""}
+                onChange={(v) => updateSameday({ cutoff_time: v })}
+                error={errors["sameday.cutoff_time"]}
+                helpText="The last moment someone can order for delivery today."
+                autoComplete="off"
+              />
+              <TextField
+                label="Last delivery at"
+                type="time"
+                value={s.day_end || ""}
+                onChange={(v) => updateSameday({ day_end: v })}
+                error={errors["sameday.day_end"]}
+                helpText="No window ends after this."
+                autoComplete="off"
+              />
+              <TextField
+                label="Time from order to first window (minutes)"
+                type="number"
+                value={String(s.lead_minutes ?? "")}
+                onChange={(v) => updateSameday({ lead_minutes: v === "" ? "" : Number(v) })}
+                error={errors["sameday.lead_minutes"]}
+                helpText="Making the order plus the rider getting here. Gophr's own estimate on the six test journeys was 38 to 62 minutes, and preparation is 60."
+                autoComplete="off"
+              />
+              <TextField
+                label="Length of each window (minutes)"
+                type="number"
+                value={String(s.window_minutes ?? "")}
+                onChange={(v) => updateSameday({ window_minutes: v === "" ? "" : Number(v) })}
+                error={errors["sameday.window_minutes"]}
+                helpText="Two hours reads well and is easy to keep. Shorter windows mean more of them."
+                autoComplete="off"
+              />
+            </InlineGrid>
+
+            <Checkbox
+              label={`Also offer a catch-all: "${s.open_window_label || ""}"`}
+              checked={s.open_window_enabled !== false}
+              onChange={(v) => updateSameday({ open_window_enabled: v })}
+              helpText="The widest promise, and therefore the easiest to keep. Customers who do not mind when it arrives will pick it."
+            />
+
+            <Divider />
+
+            <Text as="h3" variant="headingSm">
+              Wording in the basket
+            </Text>
+            <TextField
+              label="Heading"
+              value={s.label || ""}
+              onChange={(v) => updateSameday({ label: v })}
+              error={errors["sameday.label"]}
+              autoComplete="off"
+            />
+            <TextField
+              label="Description"
+              value={s.note || ""}
+              onChange={(v) => updateSameday({ note: v })}
+              multiline={2}
+              autoComplete="off"
+            />
+            <TextField
+              label="Shown when the postcode is outside every zone"
+              value={s.out_of_area || ""}
+              onChange={(v) => updateSameday({ out_of_area: v })}
+              error={errors["sameday.out_of_area"]}
+              multiline={2}
+              helpText="This is the message most same-day visitors will see, so it should point somewhere useful rather than just saying no."
+              autoComplete="off"
+            />
+
+            <Divider />
+
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h3" variant="headingSm">
+                Zones
+              </Text>
+              <Badge>{`${totalCodes} postcode ${totalCodes === 1 ? "area" : "areas"}`}</Badge>
+            </InlineStack>
+
+            <Banner tone="warning" title="These postcodes are written down twice">
+              <BlockStack gap="200">
+                <Text as="p">
+                  Shopify&rsquo;s <Text as="span" fontWeight="semibold">Local delivery</Text>{" "}
+                  settings are what actually decide whether a customer is offered
+                  same-day at checkout. The list here is what the basket checks
+                  against, so it can answer before they get that far.
+                </Text>
+                <Text as="p">
+                  <Text as="span" fontWeight="semibold">Shopify&rsquo;s API cannot read local
+                  delivery</Text>, so nothing can keep the two in step
+                  automatically. Change one, change the other.
+                </Text>
+              </BlockStack>
+            </Banner>
+
+            {errors["sameday.zones"] && (
+              <Banner tone="critical">
+                <Text as="p">{errors["sameday.zones"]}</Text>
+              </Banner>
+            )}
+
+            {zones.map((z, i) => (
+              <Box
+                key={i}
+                background="bg-surface-secondary"
+                padding="400"
+                borderRadius="200"
+              >
+                <BlockStack gap="300">
+                  <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+                    <TextField
+                      label="Zone name"
+                      value={z.name || ""}
+                      onChange={(v) => updateSamedayZone(i, { name: v })}
+                      error={errors[`sameday.zones.${i}.name`]}
+                      helpText="Internal only. The customer never sees it."
+                      autoComplete="off"
+                    />
+                    <TextField
+                      label="Price"
+                      prefix="£"
+                      value={String(z.price ?? "")}
+                      onChange={(v) => updateSamedayZone(i, { price: v })}
+                      error={errors[`sameday.zones.${i}.price`]}
+                      helpText="Must match the price on the matching Shopify local delivery zone."
+                      autoComplete="off"
+                    />
+                  </InlineGrid>
+                  <TextField
+                    label="Postcodes"
+                    value={(z.outwards || []).join(", ")}
+                    onChange={(v) => updateSamedayZone(i, { outwards: v })}
+                    error={errors[`sameday.zones.${i}.outwards`]}
+                    multiline={3}
+                    helpText={`${(z.outwards || []).length} codes. Complete outward codes only — W1T, not W1 or W1*. An asterisk looks tidy and quietly catches W10 to W14 as well.`}
+                    autoComplete="off"
+                  />
+                </BlockStack>
+              </Box>
+            ))}
+          </>
+        )}
+      </BlockStack>
+    </Card>
   );
 }
 

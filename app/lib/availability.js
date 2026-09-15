@@ -8,6 +8,7 @@ import {
   addDays,
   timeToMinutes,
   minutesToLabel,
+  rangeLabel,
   dateLabel,
 } from "./timezone.js";
 import {
@@ -173,13 +174,10 @@ export function maxPrepDelayMinutes(items) {
   return max;
 }
 
-// "2:00pm" + "3:00pm" -> "2:00–3:00pm"; "11:30am" + "12:00pm" -> "11:30am–12:00pm".
-export function rangeLabel(startMins, endMins) {
-  const start = minutesToLabel(startMins);
-  const end = minutesToLabel(endMins);
-  const sameSuffix = start.slice(-2) === end.slice(-2);
-  return sameSuffix ? `${start.slice(0, -2)}–${end}` : `${start}–${end}`;
-}
+// Moved to timezone.js so same-day delivery windows spell a range the same way
+// collection slots do. Re-exported here because callers already import it from
+// this module.
+export { rangeLabel };
 
 function blackoutsFor(settings, dateStr) {
   return settings.blackout_dates.filter((b) => b.date === dateStr);
