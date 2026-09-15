@@ -218,12 +218,25 @@ async function draftTestJob({ perishable, when }) {
 
   const chosen = pickupOptions().find((o) => o.value === when) || { iso: null, label: "Right now" };
 
+  /* COVENT GARDEN, NOT THE SHOP.
+   *
+   * The bench used to send from 29 Rathbone Place to 29 Rathbone Place, so a
+   * real rider would have turned up somewhere sensible. Gophr refused it:
+   * ERROR_SAME_LAT_LNG, "Pickup and delivery coordinates seem to be the
+   * same." Obvious in hindsight — a courier job with nowhere to go is not a
+   * courier job — and worth recording, because that error arrived only once
+   * every field in the body had been accepted, and for a moment it looked
+   * like another payload problem.
+   *
+   * Bow Street is about a mile away: inside Zone A, a genuine journey, and
+   * the same destination the quote bench already uses, so a booking and a
+   * quote can be compared like with like. */
   const destination = {
     name: "Test Recipient",
     mobile: pickupMobile(),
-    address1: "29 Rathbone Place",
+    address1: "Bow Street",
     city: "London",
-    postcode: "W1T 1JG",
+    postcode: "WC2E 9DD",
     country_code: "GB",
   };
 
@@ -633,7 +646,9 @@ export default function Courier() {
               <BlockStack gap="200">
                 <Text as="h3" variant="headingSm">1 · Create a draft</Text>
                 <Text as="p" tone="subdued" variant="bodySm">
-                  Uses the day and time selected above. Books from the shop to the shop.
+                  Uses the day and time selected above. Shop to Bow Street, Covent
+                  Garden — about a mile, inside Zone A, and the same destination the
+                  quote bench uses so the two can be compared.
                 </Text>
                 <InlineStack gap="300">
                   <Button
