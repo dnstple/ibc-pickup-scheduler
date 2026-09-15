@@ -676,6 +676,58 @@ export const DEADLINE_FIELDS = [
   "latest_delivery_time",
 ];
 
+/**
+ * THE PRICE CURVE FOR A DEADLINE.
+ *
+ * `dropoff_deadline` is the field — settled by the probe below, which found
+ * it by the only name that moved the price. What it COSTS turned out to be
+ * the more interesting question: a 90-minute deadline on a Zone A journey
+ * took £9.42 to £16.58, which is +76% and would make same-day loss-making on
+ * every order.
+ *
+ * That number was frightening and misleading. 90 minutes is far tighter than
+ * anything the shop actually promises: a customer ordering at three in the
+ * afternoon picks a window ending at seven, which is four hours out. Gophr is
+ * pricing URGENCY, so the question is not "what does a deadline cost" but
+ * "what does THIS deadline cost", and the answer is a curve rather than a
+ * number.
+ *
+ * Quotes are free. Measuring the curve is therefore free, and guessing at it
+ * would be indefensible.
+ */
+export async function probeDeadlineCurve({ destination, parcel, minutesList }) {
+  const rows = [];
+
+  const base = await quote({ destination, parcel });
+  const baseline = base.price?.gross?.amount ?? base.price?.amount ?? null;
+  rows.push({ minutes: null, label: "no deadline", amount: baseline, delta: 0 });
+
+  for (const minutes of minutesList) {
+    const iso = new Date(Date.now() + minutes * 60000)
+      .toISOString()
+      .replace(/\.\d{3}Z$/, "+00:00");
+    const body = buildQuoteBody({ destination, parcel });
+    body.dropoffs[0].dropoff_deadline = iso;
+    try {
+      const payload = await call("/quotes", { method: "POST", body });
+      const price = readQuote(payload);
+      const amount = price?.gross?.amount ?? price?.amount ?? null;
+      rows.push({
+        minutes,
+        label: `${minutes} min (${Math.round((minutes / 60) * 10) / 10}h)`,
+        amount,
+        delta: amount != null && baseline != null
+          ? Number((amount - baseline).toFixed(2))
+          : null,
+      });
+    } catch (error) {
+      rows.push({ minutes, label: `${minutes} min`, amount: null, error: error.message });
+    }
+  }
+
+  return { baseline, rows };
+}
+
 export async function probeDeadline({ destination, parcel, deadlineIso }) {
   const results = [];
 

@@ -42,6 +42,7 @@ import {
   cancelJob,
   progressDelivery,
   probeDeadline,
+  probeDeadlineCurve,
   CONFIRM_BODY,
   pickupMobile,
   GophrError,
@@ -182,6 +183,7 @@ export const action = async ({ request }) => {
   const armed = isArmed(form);   /* ⚠️ LIVE TEST — delete with its block */
   if (intent === "cancel") return cancelTestJob(form.get("jobId"));
   if (intent === "deadline") return probeDeadlineField(form.get("deadlineMinutes"));
+  if (intent === "curve") return probeCurve();
   if (intent === "draft") return draftTestJob({ perishable, when, armed });
   if (intent === "confirm") {
     return confirmTestJob(form.get("jobId"), form.get("confirmBody"), armed);
@@ -373,6 +375,33 @@ async function probeDeadlineField(rawMinutes) {
         body: error instanceof GophrError ? error.body : undefined,
       },
     };
+  }
+}
+
+/** The price of a deadline, across the range the shop actually promises. */
+async function probeCurve() {
+  const destination = {
+    name: "Test Recipient",
+    mobile: pickupMobile(),
+    address1: "Bow Street",
+    city: "London",
+    postcode: "WC2E 9DD",
+    country_code: "GB",
+  };
+  const parcel = parcelFor({ grams: 2100, perishable: true, id: `ibc-curve-${Date.now()}` });
+
+  try {
+    /* 60 is tighter than anything offered; 300 is the far end of a late
+     * afternoon order picking the last window of the day. The shop's real
+     * promises land in the middle. */
+    const found = await probeDeadlineCurve({
+      destination,
+      parcel,
+      minutesList: [60, 90, 120, 180, 240, 300],
+    });
+    return { curve: { ok: true, ...found } };
+  } catch (error) {
+    return { curve: { ok: false, message: error.message } };
   }
 }
 
@@ -574,6 +603,7 @@ export default function Courier() {
    * fresh. */
   const booking = fetcher.data?.booking || null;
   const deadline = fetcher.data?.deadline || null;
+  const curve = fetcher.data?.curve || null;
   const [deadlineMinutes, setDeadlineMinutes] = useState("90");
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
@@ -896,6 +926,45 @@ export default function Courier() {
                         costs nothing extra and we should simply always send it.
                       </Text>
                     )}
+                  </BlockStack>
+                </Box>
+              )}
+
+              <Divider />
+
+              <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">The price curve</Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Gophr prices urgency, so a deadline is a curve rather than a number.
+                  This quotes the same journey at six deadline lengths. The ones that
+                  matter are 180 and 240 minutes — a customer ordering mid-afternoon
+                  picks a window ending three or four hours later, not in ninety minutes.
+                </Text>
+                <InlineStack gap="300">
+                  <Button
+                    onClick={() => fetcher.submit({ intent: "curve" }, { method: "POST" })}
+                    loading={running}
+                    disabled={!status.configured}
+                  >
+                    Measure the curve
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+
+              {curve && curve.ok && (
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+                  <BlockStack gap="150">
+                    {curve.rows.map((r) => (
+                      <Text as="p" key={r.label} variant="bodySm">
+                        <Text as="span" fontWeight="semibold">{r.label.padEnd ? r.label : r.label}</Text>
+                        {" — "}
+                        {r.amount != null ? `£${r.amount.toFixed(2)}` : (r.error || "no price")}
+                        {r.delta ? `  (${r.delta > 0 ? "+" : ""}£${r.delta.toFixed(2)})` : ""}
+                        {r.amount != null && r.minutes
+                          ? `   · Zone A margin ${(12.95 - r.amount) >= 0 ? "+" : "−"}£${Math.abs(12.95 - r.amount).toFixed(2)}`
+                          : ""}
+                      </Text>
+                    ))}
                   </BlockStack>
                 </Box>
               )}
