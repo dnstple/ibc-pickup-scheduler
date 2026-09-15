@@ -156,12 +156,39 @@ function destinationFrom(order) {
   };
 }
 
-/** Grams for the whole basket, and whether anything in it is a cake. */
+/* Above this, the basket needs the big box and a vehicle that can take it. A
+ * whole cake is 2.1kg in the shop's own product data; a slice is 220g; a bar
+ * of chocolate is less. 1.5kg sits in the gap with room either side. */
+const BULKY_GRAMS = 1500;
+
+/**
+ * Grams for the whole basket, and whether it needs the big box.
+ *
+ * ⚠️ THE METAFIELD STOPPED WORKING AND NOTHING SAID SO.
+ *
+ * This used to read `custom.pickup_delay_minutes > 60` — the cakes carried
+ * 180, so a cake meant a bigger parcel. That metafield has since been cleared
+ * on every product (preparation time is a flat 60 minutes now), so the test
+ * was quietly false for every order ever placed. A 2.1kg cake was being
+ * described to Gophr as a 30x25x20cm parcel weighing 100g, and Gophr picks
+ * the vehicle from size and weight — so a whole cake could have been sent out
+ * on a PUSHBIKE.
+ *
+ * Nothing errored. Nothing logged. The only symptom would have been a
+ * flattened cake.
+ *
+ * WEIGHT IS THE BETTER SIGNAL and it was there all along: every product
+ * carries a real weight because Royal Mail needs one, so it is maintained by
+ * something other than good intentions. The metafield is still honoured for
+ * any shop that uses it, but it is no longer the only thing asked.
+ */
 function parcelFrom(order) {
   const grams = Number(order?.totalWeight);
-  const perishable = (order?.lineItems?.nodes || []).some(
+  const heavy = Number.isFinite(grams) && grams >= BULKY_GRAMS;
+  const flagged = (order?.lineItems?.nodes || []).some(
     (line) => Number(line?.product?.perishable?.value) > 60
   );
+  const perishable = heavy || flagged;
   return parcelFor({
     grams: Number.isFinite(grams) && grams > 0 ? grams : 500,
     perishable,
@@ -206,6 +233,20 @@ export const action = async ({ request }) => {
     log("no order gid on the payload; ignoring");
     return new Response();
   }
+
+  /* WHETHER A RIDER IS ACTUALLY ON THE ROAD.
+   *
+   * Declared out here because the catch below has to know. The failure that
+   * makes this necessary is narrow and expensive: bookJob() succeeds, the
+   * rider is dispatched and the money is committed, and THEN the write back
+   * to Shopify fails on a transient error. The catch would see a failure,
+   * ask Shopify to retry, and the retry would find no job id on the order —
+   * because the write is exactly what failed — decide nothing had been
+   * booked, and book a SECOND RIDER.
+   *
+   * Two riders, two invoices, one box of chocolate. Rare, and precisely the
+   * sort of rare that happens on a busy Saturday. */
+  let dispatched = null;
 
   try {
     const response = await admin.graphql(ORDER_QUERY, { variables: { id: gid } });
@@ -321,6 +362,10 @@ export const action = async ({ request }) => {
       return new Response();
     }
 
+    /* From here on a rider is coming. Recorded BEFORE the write, because the
+     * write is the thing that might fail. */
+    dispatched = result.job || null;
+
     await writeBack(
       admin,
       order,
@@ -360,6 +405,33 @@ export const action = async ({ request }) => {
   } catch (error) {
     const isGophr = error instanceof GophrError;
     log(gid, "failed:", error?.message || error, isGophr ? JSON.stringify(error.body) : "");
+
+    /* A RIDER IS ALREADY ON THE ROAD, so there is nothing safe to retry.
+     *
+     * Whatever went wrong happened AFTER the booking, which means every retry
+     * would re-run the booking. Answer 200, record what we know, and shout in
+     * the log. A booked order with a missing attribute is a five-minute fix;
+     * a second rider is a refund and an apology. */
+    if (dispatched) {
+      log(gid, "FAILED AFTER DISPATCH — not retrying. Job", dispatched.jobId);
+      try {
+        const response = await admin.graphql(ORDER_QUERY, { variables: { id: gid } });
+        const { data } = await response.json();
+        if (data?.order) {
+          await writeBack(
+            admin,
+            data.order,
+            bookedAttributes({ job: dispatched, quotePence: undefined }),
+            ["same-day", "courier-booked"]
+          );
+        }
+      } catch (recordError) {
+        /* Even this failed. The log line above is now the only record that a
+         * rider was booked, which is why it says so in capitals. */
+        log(gid, "could not record the booking either:", recordError?.message || recordError);
+      }
+      return new Response();
+    }
 
     /* A transient failure is worth one more go, for a few minutes. After that
      * the window is gone and a retry is a rider nobody wants. */
