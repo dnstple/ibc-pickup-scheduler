@@ -27,6 +27,7 @@ import {
   Page,
   Select,
   Text,
+  TextField,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import {
@@ -36,7 +37,9 @@ import {
   parcelFor,
   buildQuoteBody,
   buildJobBody,
-  bookJob,
+  createJob,
+  confirmJob,
+  CONFIRM_BODY,
   pickupMobile,
   GophrError,
 } from "../lib/gophr.server";
@@ -122,7 +125,11 @@ export const action = async ({ request }) => {
   const perishable = form.get("perishable") === "true";
   const when = form.get("when") || "now";
 
-  if (form.get("intent") === "book") return bookTestJob({ perishable, when });
+  const intent = form.get("intent");
+  if (intent === "draft") return draftTestJob({ perishable, when });
+  if (intent === "confirm") {
+    return confirmTestJob(form.get("jobId"), form.get("confirmBody"));
+  }
 
 
   // Recomputed here rather than trusted from the form. The client has no
@@ -179,39 +186,38 @@ export const action = async ({ request }) => {
   };
 };
 
+/* The sandbox guard, spelled once. It REFUSES rather than warns: a bench whose
+ * whole purpose is to send half-understood requests until one sticks has no
+ * business being one careless environment variable away from a real rider
+ * arriving at Rathbone Place. */
+function refuseOutsideSandbox() {
+  if (gophrEnv() === "sandbox") return null;
+  return {
+    booking: {
+      ok: false,
+      refused: true,
+      message:
+        "This bench only runs against the sandbox. GOPHR_ENV is set to production, " +
+        "and confirming a job there dispatches a real rider to the shop.",
+    },
+  };
+}
+
 /**
- * ONE booking, against the sandbox, to discover the request shape.
+ * Step one: create a DRAFT and show what came back.
  *
- * The quote shape took four round trips to establish, because every one of
- * them was a guess checked against a real response. This is the same
- * instrument pointed at `POST /job`: send the best inference, read what Gophr
- * says it wanted, change it to that. A 422 here is the tool working.
- *
- * IT REFUSES TO RUN AGAINST PRODUCTION, and refuses rather than warns. A
- * button whose whole purpose is to send malformed requests until one sticks
- * has no business being one careless environment variable away from a real
- * rider arriving at 29 Rathbone Place.
+ * Safe by construction. Gophr's dispatcher never sees a draft, so this can be
+ * run, read and abandoned without anything happening in the world. That is
+ * exactly why the bench does it as its own step rather than as half of a
+ * single booking button: the draft's response is the thing we need to read,
+ * and reading it should not require dispatching anybody.
  */
-async function bookTestJob({ perishable, when }) {
-  const environment = gophrEnv();
-  if (environment !== "sandbox") {
-    return {
-      booking: {
-        ok: false,
-        refused: true,
-        message:
-          "This bench only runs against the sandbox. GOPHR_ENV is set to production, " +
-          "and a test booking there dispatches a real rider to the shop.",
-      },
-    };
-  }
+async function draftTestJob({ perishable, when }) {
+  const refused = refuseOutsideSandbox();
+  if (refused) return refused;
 
   const chosen = pickupOptions().find((o) => o.value === when) || { iso: null, label: "Right now" };
 
-  /* The shop's own address as the destination. If the shape is wrong the
-   * request fails, and if it is right a sandbox rider is dispatched to nowhere
-   * — but a real one would come here, which is the least surprising place for
-   * a test parcel to be sent. */
   const destination = {
     name: "Test Recipient",
     mobile: pickupMobile(),
@@ -238,6 +244,7 @@ async function bookTestJob({ perishable, when }) {
     return {
       booking: {
         ok: false,
+        step: "draft",
         message:
           "GOPHR_PICKUP_MOBILE is not set. Gophr needs a number for the collection, " +
           "and a job cannot be created without one. Add it in Vercel and redeploy.",
@@ -247,10 +254,11 @@ async function bookTestJob({ perishable, when }) {
   }
 
   try {
-    const result = await bookJob(options);
+    const result = await createJob(options);
     return {
       booking: {
         ok: true,
+        step: "draft",
         when: chosen.label,
         job: result.job,
         request: result.request,
@@ -261,14 +269,69 @@ async function bookTestJob({ perishable, when }) {
     return {
       booking: {
         ok: false,
+        step: "draft",
         when: chosen.label,
         message: error.message,
         status: error instanceof GophrError ? error.status : undefined,
         body: error instanceof GophrError ? error.body : undefined,
-        /* The request, on the failure path, for the same reason the quote
-         * bench shows it: without it a stale deploy and a wrong payload look
-         * identical. */
         request: error?.request || buildJobBody(options),
+      },
+    };
+  }
+}
+
+/**
+ * Step two: confirm the draft. THIS DISPATCHES.
+ *
+ * The body is whatever the operator typed. The path and the method are
+ * settled — PATCH /jobs/{job_id}, from Gophr's own "Confirming a Job" page —
+ * but the body is not, and a wrong guess should cost a click rather than a
+ * Vercel deploy and ten minutes. So it is a text box.
+ */
+async function confirmTestJob(jobId, rawBody) {
+  const refused = refuseOutsideSandbox();
+  if (refused) return refused;
+
+  if (!jobId) {
+    return { booking: { ok: false, step: "confirm", message: "No draft to confirm — create one first." } };
+  }
+
+  let body = CONFIRM_BODY;
+  const text = String(rawBody || "").trim();
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch (error) {
+      return {
+        booking: {
+          ok: false,
+          step: "confirm",
+          message: `That confirm body is not valid JSON: ${error.message}`,
+        },
+      };
+    }
+  }
+
+  try {
+    const result = await confirmJob(jobId, body);
+    return {
+      booking: {
+        ok: true,
+        step: "confirm",
+        job: result.job,
+        request: result.request,
+        response: result.response,
+      },
+    };
+  } catch (error) {
+    return {
+      booking: {
+        ok: false,
+        step: "confirm",
+        message: error.message,
+        status: error instanceof GophrError ? error.status : undefined,
+        body: error instanceof GophrError ? error.body : undefined,
+        request: error?.request || { path: `/jobs/${jobId}`, body },
       },
     };
   }
@@ -288,6 +351,14 @@ export default function Courier() {
    * leave the quote table rendering the previous run's rows as if they were
    * fresh. */
   const booking = fetcher.data?.booking || null;
+  /* The draft's id, remembered across the two steps so confirming does not
+   * mean copying a uuid out of a JSON blob by hand. */
+  const [draftId, setDraftId] = useState("");
+  const [confirmBody, setConfirmBody] = useState('{"status":"confirmed"}');
+  if (booking?.step === "draft" && booking.ok && booking.job?.jobId &&
+      booking.job.jobId !== draftId) {
+    setDraftId(booking.job.jobId);
+  }
 
   const run = (perishable) => {
     const body = new FormData();
@@ -531,7 +602,7 @@ export default function Courier() {
         {/* ---------------------------------------------------- book a job */}
         <Layout.Section>
           <Card>
-            <BlockStack gap="300">
+            <BlockStack gap="400">
               <InlineStack align="space-between" blockAlign="center">
                 <Text as="h2" variant="headingMd">Book a test job</Text>
                 <Badge tone={status.environment === "sandbox" ? "success" : "critical"}>
@@ -539,50 +610,116 @@ export default function Courier() {
                 </Badge>
               </InlineStack>
 
-              <Text as="p">
-                A quote is a question; this is the booking. The quote request shape took
-                four attempts to get right, and every one of them was settled by sending
-                something and reading the answer. This does the same for{" "}
-                <Text as="span" fontWeight="semibold">POST /job</Text>, which has never
-                been called. <Text as="span" fontWeight="semibold">Expect the first
-                attempt to fail with a list of field names</Text> — that list is the
-                point, and it is what the webhook will be corrected against.
-              </Text>
+              <Banner tone="info" title="Booking is two steps, and only the second one dispatches">
+                <List>
+                  <List.Item>
+                    <Text as="span" fontWeight="semibold">POST /jobs</Text> creates a
+                    draft. Gophr&rsquo;s dispatcher never sees it. Nothing happens.
+                  </List.Item>
+                  <List.Item>
+                    <Text as="span" fontWeight="semibold">PATCH /jobs/&#123;id&#125;</Text>{" "}
+                    confirms it, and that is what sends a rider.
+                  </List.Item>
+                </List>
+                <Text as="p">
+                  The first attempt used <Text as="span" fontWeight="semibold">POST /job</Text>,
+                  singular, and got a 404 with an empty body — a routing answer rather
+                  than a payload one, which is how it was told apart from the 422s that
+                  settled the quote shape.
+                </Text>
+              </Banner>
 
-              <Text as="p" tone="subdued" variant="bodySm">
-                It books from the shop to the shop, using the day and time selected
-                above, and refuses outright if GOPHR_ENV is not sandbox.
-              </Text>
+              {/* ---- step one ---- */}
+              <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">1 · Create a draft</Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Uses the day and time selected above. Books from the shop to the shop.
+                </Text>
+                <InlineStack gap="300">
+                  <Button
+                    onClick={() =>
+                      fetcher.submit(
+                        { intent: "draft", perishable: "false", when },
+                        { method: "POST" }
+                      )
+                    }
+                    loading={running}
+                    disabled={status.environment !== "sandbox" || !status.configured}
+                  >
+                    Create a draft job
+                  </Button>
+                </InlineStack>
+              </BlockStack>
 
-              <InlineStack gap="300">
-                <Button
-                  onClick={() =>
-                    fetcher.submit(
-                      { intent: "book", perishable: "false", when },
-                      { method: "POST" }
-                    )
-                  }
-                  loading={fetcher.state !== "idle"}
-                  disabled={status.environment !== "sandbox" || !status.configured}
-                >
-                  Send one test booking
-                </Button>
-              </InlineStack>
+              {/* ---- step two ---- */}
+              <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">2 · Confirm it</Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  The path and method are settled; the BODY is still a guess, so it is a
+                  text box — a wrong guess costs a click rather than a deploy. If this
+                  422s, read what it says it wanted and try again without redeploying.
+                </Text>
+                <TextField
+                  label="Draft job id"
+                  value={draftId}
+                  onChange={setDraftId}
+                  autoComplete="off"
+                  helpText="Filled in automatically when a draft is created."
+                />
+                <TextField
+                  label="Confirm body (JSON)"
+                  value={confirmBody}
+                  onChange={setConfirmBody}
+                  multiline={2}
+                  autoComplete="off"
+                  helpText={'Try {"status":"confirmed"}, then {"confirmed":true}, then {} if those fail.'}
+                />
+                <InlineStack gap="300">
+                  <Button
+                    tone="critical"
+                    onClick={() =>
+                      fetcher.submit(
+                        { intent: "confirm", jobId: draftId, confirmBody },
+                        { method: "POST" }
+                      )
+                    }
+                    loading={running}
+                    disabled={
+                      status.environment !== "sandbox" || !status.configured || !draftId
+                    }
+                  >
+                    Confirm the draft
+                  </Button>
+                </InlineStack>
+              </BlockStack>
 
+              {/* ---- what happened ---- */}
               {booking && booking.ok && (
-                <Banner tone="success" title="Gophr accepted the booking">
+                <Banner
+                  tone="success"
+                  title={booking.step === "draft"
+                    ? "Draft created — nothing dispatched"
+                    : "Confirmed — this one is real"}
+                >
                   <BlockStack gap="200">
                     <Text as="p">
                       Job {booking.job?.jobId || "(no id found in the response)"}
-                      {booking.job?.deliveryId ? ` · delivery ${booking.job.deliveryId}` : ""}
-                      {booking.job?.status ? ` · ${booking.job.status}` : ""}
+                      {booking.job?.deliveryId ? ` \u00b7 delivery ${booking.job.deliveryId}` : ""}
+                      {booking.job?.status ? ` \u00b7 ${booking.job.status}` : ""}
                     </Text>
-                    {!booking.job?.jobId && (
+                    {booking.job?.price?.amount != null && (
                       <Text as="p">
-                        No job id could be read from the response. The shape below needs
-                        to go into readJob() before the webhook can be trusted — without
-                        an id there is nothing to cancel and nothing to stop a retry
-                        booking a second rider.
+                        The draft&rsquo;s own price: £{booking.job.price.amount.toFixed(2)}
+                        {booking.job.price.path ? ` (${booking.job.price.path})` : ""}. This is
+                        the figure the circuit breaker should check, not a separate quote.
+                      </Text>
+                    )}
+                    {booking.step === "draft" && !booking.job?.jobId && (
+                      <Text as="p">
+                        No job id could be read from the response. Its shape needs to go
+                        into readJob() before the webhook can be trusted — without an id
+                        there is nothing to confirm, nothing to cancel and no protection
+                        against a retry booking a second rider.
                       </Text>
                     )}
                   </BlockStack>
@@ -590,13 +727,19 @@ export default function Courier() {
               )}
 
               {booking && !booking.ok && (
-                <Banner tone={booking.refused ? "warning" : "critical"}
-                        title={booking.refused ? "Refused" : `Booking failed${booking.status ? ` — ${booking.status}` : ""}`}>
+                <Banner
+                  tone={booking.refused ? "warning" : "critical"}
+                  title={
+                    booking.refused
+                      ? "Refused"
+                      : `${booking.step === "confirm" ? "Confirm" : "Draft"} failed${booking.status ? ` — ${booking.status}` : ""}`
+                  }
+                >
                   <Text as="p">{booking.message}</Text>
                 </Banner>
               )}
 
-              {booking && (
+              {booking && booking.request && (
                 <Box background="bg-surface-secondary" padding="300" borderRadius="200">
                   <BlockStack gap="200">
                     <Text as="p" fontWeight="semibold" variant="bodySm">What was sent</Text>

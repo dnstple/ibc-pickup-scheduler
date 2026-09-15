@@ -549,3 +549,40 @@ test("THE OFFSET SETTING REACHES THE PICKUP TIME THROUGH courierPlan", () => {
   assert.equal(plan.act, "quote");
   assert.equal(plan.pickupIso, "2026-09-15T12:30:00.000Z");
 });
+
+/* ------------------------------------------------------------- draft vs booked */
+
+test("A DRAFT'S ID MUST NOT LOOK LIKE A BOOKING", () => {
+  /* Booking is two steps: POST /jobs makes a draft that dispatches nobody,
+   * PATCH /jobs/{id} confirms it and sends a rider. An unconfirmed draft has
+   * an id too — and if that id were written to ibc_courier_job_id, this would
+   * report the order as already booked and never look at it again, which is
+   * the precise failure the idempotency check exists to prevent.
+   *
+   * So: a flagged order carries its draft id in the NOTE, and the job id
+   * field stays empty. */
+  const flagged = courierPlan({
+    order: sameday(),
+    booking: { auto_book: true },
+    quote: { grossAmount: "26.00", bandPrice: "12.95" },
+    now: NOW,
+  });
+  assert.equal(flagged.act, "flag");
+  assert.equal(flagged.attributes.ibc_courier_job_id, undefined);
+
+  /* And an order written that way is NOT treated as booked on the next pass,
+   * though it IS settled, so the webhook leaves it for the human it asked. */
+  const after = existingBooking(sameday(flagged.attributes));
+  assert.equal(after.alreadyBooked, false);
+  assert.equal(after.settled, true);
+});
+
+test("only a confirmed job fills the job id field", () => {
+  const attrs = bookedAttributes({
+    job: { jobId: "JOB-9" },
+    quotePence: 980,
+    now: NOW,
+  });
+  assert.equal(attrs.ibc_courier_job_id, "JOB-9");
+  assert.equal(existingBooking(sameday(attrs)).alreadyBooked, true);
+});

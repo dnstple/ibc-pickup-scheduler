@@ -344,31 +344,43 @@ export async function quote({ destination, parcel, earliestPickup = null }) {
 export { GophrError, BASE_URLS };
 
 /* ==================================================================== */
-/* BOOKING A JOB                                                         */
+/* BOOKING A JOB — TWO STEPS, NOT ONE                                    */
 /*                                                                       */
-/* ⚠️ THE REQUEST SHAPE BELOW IS INFERRED, NOT PROVEN.                   */
+/* Settled by a 404 and then by the documentation it sent us back to:    */
 /*                                                                       */
-/* Everything above this line was settled by real requests: four round   */
-/* trips established that `/quotes` wants flat prefixed address fields   */
-/* but BARE parcel dimensions, `parcels` on both ends, and prices read   */
-/* back as objects rather than numbers. None of that was in the docs.    */
+/*   POST  /jobs              creates a DRAFT. Dispatches nobody.        */
+/*   PATCH /jobs/{job_id}     confirms it. THIS is what sends a rider.   */
 /*                                                                       */
-/* `POST /job` has had no such round trip yet. What is known:            */
-/*   - the path is /job (singular), from the published endpoint list     */
-/*   - creating a delivery separately needs pickup_person_name and       */
+/* The first attempt used `POST /job`, singular, taken from an endpoint  */
+/* listing. It returned 404 with an empty body — a routing answer, not a */
+/* payload one, which is how it was told apart from the 422s that        */
+/* settled the quote shape. Auth and base URL were never in doubt        */
+/* because /quotes worked against exactly the same ones.                 */
+/*                                                                       */
+/* THE TWO STEPS ARE WHY THE CIRCUIT BREAKER MOVED.                      */
+/*                                                                       */
+/* Gophr's own words: "if a job is confirmed at a later point, a new     */
+/* quote may be generated for that job and prices may change." So a      */
+/* price read from POST /quotes is an estimate of an estimate — checking */
+/* it and then confirming would police a number nobody is charged.       */
+/* The draft carries its own price, and that is the one checked. Confirm */
+/* follows immediately, so there is no "later point" for it to drift in. */
+/*                                                                       */
+/* ⚠️ STILL INFERRED: the CONFIRM BODY. PATCH takes something; what      */
+/* exactly is unknown. The bench sends it as free text so a wrong guess  */
+/* costs a click rather than a deploy.                                   */
+/*                                                                       */
+/* What is known about the body, and where from:                         */
+/*   - creating a delivery separately requires pickup_person_name and    */
 /*     pickup_mobile_number, which quotes never asked for — so a job     */
-/*     almost certainly needs contacts at both ends                      */
+/*     needs contacts at both ends                                       */
 /*   - deliveries carry an `external_id`, which Gophr echoes back on its */
 /*     status webhooks, so it is the natural idempotency handle          */
+/*   - parcel_external_id must be unique within a job                    */
 /*                                                                       */
-/* THE FIRST CALL WILL PROBABLY 422 WITH A LIST OF FIELD NAMES. That is  */
-/* the intended outcome, not a failure: it is how the quote shape was    */
-/* found. `bookJob` therefore returns the request alongside any error,   */
-/* because the one time that was left out, a deploy that had not taken   */
-/* effect looked exactly like a payload bug and cost a round trip.       */
-/*                                                                       */
-/* Do not "tidy" this by guessing more fields. Send it, read what Gophr  */
-/* says it wants, change it to that.                                     */
+/* Every call returns the request alongside any error, because the one   */
+/* time that was left out, a deploy that had not taken effect looked     */
+/* exactly like a payload bug and cost a round trip.                     */
 
 /**
  * The shop's own phone number, which Gophr needs for the collection.
@@ -465,14 +477,18 @@ export function readJob(payload) {
   };
 }
 
+/** The default confirm body. A guess, and labelled as one — the bench can
+ * send anything else without a redeploy. */
+export const CONFIRM_BODY = { status: "confirmed" };
+
 /**
- * Book a rider.
+ * Step one: create the DRAFT.
  *
- * Returns { request, response, job } on success. On failure it throws a
- * GophrError carrying `request` as well as Gophr's own answer, so a 422 can
- * be read against exactly what was sent.
+ * Safe. A draft is not dispatched — Gophr's dispatcher never sees it until it
+ * is confirmed. So this can be run against the sandbox, read, and thrown away
+ * without anything happening in the world.
  */
-export async function bookJob(options) {
+export async function createJob(options) {
   const body = buildJobBody(options);
 
   if (!pickupMobile()) {
@@ -484,16 +500,71 @@ export async function bookJob(options) {
 
   let payload;
   try {
-    payload = await call("/job", { method: "POST", body, timeoutMs: 12000 });
+    payload = await call("/jobs", { method: "POST", body, timeoutMs: 12000 });
   } catch (error) {
-    if (error instanceof GophrError) {
-      error.request = body;
-      throw error;
-    }
+    if (error instanceof GophrError) error.request = body;
     throw error;
   }
 
   return { request: body, response: payload, job: readJob(payload) };
+}
+
+/**
+ * Step two: confirm it, which dispatches a rider.
+ *
+ * `body` is configurable because the shape is not yet proven. Everything else
+ * about this call is: the path and the method come from Gophr's own
+ * "Confirming a Job" page.
+ */
+export async function confirmJob(jobId, body = CONFIRM_BODY) {
+  if (!jobId) throw new GophrError("No job id to confirm.");
+  const path = `/jobs/${encodeURIComponent(jobId)}`;
+
+  let payload;
+  try {
+    payload = await call(path, { method: "PATCH", body, timeoutMs: 12000 });
+  } catch (error) {
+    if (error instanceof GophrError) error.request = { path, body };
+    throw error;
+  }
+
+  return { request: { path, body }, response: payload, job: readJob(payload) };
+}
+
+/**
+ * Both steps, with a decision in between.
+ *
+ * `approve` is called with the DRAFT'S OWN PRICE and decides whether to go
+ * ahead. That ordering is the whole point: Gophr says a job confirmed later
+ * may be re-quoted, so the only price worth policing is the one attached to
+ * the thing about to be confirmed — not a separate /quotes call made moments
+ * earlier against a slightly different question.
+ *
+ * A draft that is not approved is LEFT AS A DRAFT rather than cancelled.
+ * Cancelling it would be tidier and is not worth the risk: an unconfirmed job
+ * costs nothing, dispatches nobody and expires on Gophr's side, whereas a
+ * cancel call against a half-understood API on the unhappy path is how a
+ * confirmed job gets called off by mistake.
+ */
+export async function bookJob(options, { approve = null, confirmBody } = {}) {
+  const draft = await createJob(options);
+
+  if (!draft.job?.jobId) {
+    throw new GophrError("Gophr created the job but returned no job id.", {
+      body: draft.response,
+      request: draft.request,
+    });
+  }
+
+  if (typeof approve === "function") {
+    const verdict = await approve(draft);
+    if (!verdict || verdict.ok !== true) {
+      return { draft, confirmed: null, refused: verdict || { ok: false } };
+    }
+  }
+
+  const confirmed = await confirmJob(draft.job.jobId, confirmBody || CONFIRM_BODY);
+  return { draft, confirmed, refused: null, job: confirmed.job || draft.job };
 }
 
 /** Call off a rider. Used when a booking succeeded but the order was cancelled. */

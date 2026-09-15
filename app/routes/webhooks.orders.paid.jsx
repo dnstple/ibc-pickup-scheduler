@@ -32,7 +32,7 @@ import {
   failedAttributes,
   normalizeBooking,
 } from "../lib/courier-booking.js";
-import { bookJob, quote, parcelFor, GophrError } from "../lib/gophr.server.js";
+import { bookJob, parcelFor, GophrError } from "../lib/gophr.server.js";
 
 /* Everything the decision needs, and nothing else. `customAttributes` is read
  * FRESH rather than taken from the webhook payload: the payload is a snapshot
@@ -194,71 +194,96 @@ export const action = async ({ request }) => {
       return new Response();
     }
 
-    /* Pass two: what does Gophr say it costs? */
+    /* Pass two: create the DRAFT and let it name its own price.
+     *
+     * There is no separate /quotes call here any more, and its absence is the
+     * point. Gophr's documentation says a job confirmed at a later point may
+     * be re-quoted and "prices may change" — so a circuit breaker fed from
+     * /quotes would be policing a number nobody is charged. The draft carries
+     * the price that confirming will charge, and the two happen one after the
+     * other, so there is no later point for it to drift in.
+     *
+     * A draft dispatches nobody. If the price is refused below, it is simply
+     * left as a draft: it costs nothing, sends nobody, and expires on Gophr's
+     * side. Cancelling it would be tidier and is not worth making a second
+     * half-understood call on the unhappy path. */
     const destination = destinationFrom(order);
     const zone = zoneForPostcode(destination.postcode, sameday.zones);
 
-    const asked = await quote({
-      destination,
-      parcel: parcelFrom(order),
-      earliestPickup: first.pickupIso,
-    });
+    let verdictForLog = null;
 
-    const second = courierPlan({
-      order,
-      booking,
-      quote: {
-        grossAmount: asked.price?.gross?.amount ?? asked.price?.amount ?? null,
-        bandPrice: zone?.price ?? null,
+    const result = await bookJob(
+      {
+        destination,
+        parcel: parcelFrom(order),
+        earliestPickup: first.pickupIso,
+        externalId: order.name || order.id,
+        reference: order.name || undefined,
+        dropoffNotes: first.intent?.label
+          ? `Delivery window: ${first.intent.label}`
+          : undefined,
       },
-    });
+      {
+        approve: async (draft) => {
+          const decided = courierPlan({
+            order,
+            booking,
+            quote: {
+              grossAmount:
+                draft.job?.price?.gross?.amount ?? draft.job?.price?.amount ?? null,
+              bandPrice: zone?.price ?? null,
+            },
+          });
+          verdictForLog = decided;
+          return { ok: decided.act === "book", plan: decided };
+        },
+      }
+    );
 
-    if (second.act === "flag") {
-      await writeBack(admin, order, second.attributes, ["same-day", "courier-review"]);
-      log(order.name, "flagged after quoting:", second.reason, second.quotePence);
-      return new Response();
-    }
-
-    if (second.act !== "book") {
-      log(order.name, "nothing to do after quoting:", second.act, second.reason);
-      return new Response();
-    }
-
-    /* Pass three: book it. */
-    const booked = await bookJob({
-      destination,
-      parcel: parcelFrom(order),
-      earliestPickup: second.pickupIso,
-      externalId: order.name || order.id,
-      reference: order.name || undefined,
-      dropoffNotes: first.intent?.label
-        ? `Delivery window: ${first.intent.label}`
-        : undefined,
-    });
-
-    if (!booked.job?.jobId) {
-      /* Gophr answered 2xx and we cannot find an id in it. NOT treated as a
-       * success: without an id there is nothing to cancel, nothing to track
-       * and no protection against a retry booking a second rider. */
+    /* The draft was made and then not confirmed — too dear, or automatic
+     * booking is off. Either way a human decides now. */
+    if (result.refused) {
+      const decided = verdictForLog;
+      const attributes = decided?.attributes || {};
       await writeBack(
         admin,
         order,
-        failedAttributes({
-          note: "Gophr accepted the booking but returned no job id. Check the Gophr portal before booking again — a rider may already be on the way.",
-        }),
+        {
+          ...attributes,
+          /* THE JOB ID FIELD STAYS EMPTY, and the draft's id goes in the NOTE
+           * instead. That split is deliberate, not tidiness.
+           *
+           * `ibc_courier_job_id` means "a rider is coming". It is what
+           * existingBooking() reads to decide an order is already handled, so
+           * putting a draft's id there would make the webhook treat an
+           * unconfirmed job as a booked one and never look at it again — the
+           * exact failure the idempotency check exists to prevent.
+           *
+           * The note is prose for a human, who can open that draft in Gophr,
+           * look at the real price and confirm it in one click rather than
+           * building the job again by hand. */
+          ibc_courier_job_id: null,
+          ibc_courier_note:
+            `${attributes.ibc_courier_note || "Not booked."} ` +
+            `A draft is waiting in Gophr as ${result.draft?.job?.jobId || "(no id)"} — ` +
+            `confirm it there if you are happy with the price.`,
+        },
         ["same-day", "courier-review"]
       );
-      log(order.name, "booked with no id:", JSON.stringify(booked.response));
+      log(order.name, "drafted but not confirmed:", decided?.reason, decided?.quotePence);
       return new Response();
     }
 
     await writeBack(
       admin,
       order,
-      bookedAttributes({ job: booked.job, quotePence: second.quotePence }),
+      bookedAttributes({
+        job: result.job,
+        quotePence: verdictForLog?.quotePence,
+      }),
       ["same-day", "courier-booked"]
     );
-    log(order.name, "booked", booked.job.jobId, "at", second.quotePence, "pence");
+    log(order.name, "booked", result.job?.jobId, "at", verdictForLog?.quotePence, "pence");
     return new Response();
   } catch (error) {
     const isGophr = error instanceof GophrError;
