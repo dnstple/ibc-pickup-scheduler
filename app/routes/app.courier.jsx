@@ -956,15 +956,22 @@ export default function Courier() {
                 <Box background="bg-surface-secondary" padding="300" borderRadius="200">
                   <BlockStack gap="150">
                     {curve.rows.map((r) => (
-                      <Text as="p" key={r.label} variant="bodySm">
-                        <Text as="span" fontWeight="semibold">{r.label.padEnd ? r.label : r.label}</Text>
-                        {" — "}
-                        {r.amount != null ? `£${r.amount.toFixed(2)}` : (r.error || "no price")}
-                        {r.delta ? `  (${r.delta > 0 ? "+" : ""}£${r.delta.toFixed(2)})` : ""}
-                        {r.amount != null && r.minutes
-                          ? `   · Zone A margin ${(12.95 - r.amount) >= 0 ? "+" : "−"}£${Math.abs(12.95 - r.amount).toFixed(2)}`
-                          : ""}
-                      </Text>
+                      <BlockStack gap="050" key={r.label}>
+                        <Text as="p" variant="bodySm">
+                          <Text as="span" fontWeight="semibold">{r.label}</Text>
+                          {" — "}
+                          {r.amount != null ? `£${r.amount.toFixed(2)}` : (r.error || "no price")}
+                          {r.delta ? `  (${r.delta > 0 ? "+" : ""}£${r.delta.toFixed(2)})` : ""}
+                          {r.amount != null && r.minutes
+                            ? `   · Zone A margin ${(12.95 - r.amount) >= 0 ? "+" : "−"}£${Math.abs(12.95 - r.amount).toFixed(2)}`
+                            : ""}
+                        </Text>
+                        {r.detail && (
+                          <Text as="p" variant="bodySm" tone="subdued">
+                            {r.at ? `deadline ${r.at.slice(11, 16)} — ` : ""}{r.detail}
+                          </Text>
+                        )}
+                      </BlockStack>
                     ))}
                   </BlockStack>
                 </Box>

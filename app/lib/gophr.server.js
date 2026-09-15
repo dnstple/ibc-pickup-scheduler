@@ -721,7 +721,24 @@ export async function probeDeadlineCurve({ destination, parcel, minutesList }) {
           : null,
       });
     } catch (error) {
-      rows.push({ minutes, label: `${minutes} min`, amount: null, error: error.message });
+      /* THE BODY, NOT JUST THE STATUS. A run at nine in the evening returned
+       * 422 for every deadline past three hours, and "Gophr returned 422" is
+       * consistent with two completely different worlds: long deadlines being
+       * refused on principle, or the deadline simply falling past the end of
+       * the operating day, which ends at 23:55. Those call for opposite
+       * decisions, and the difference is written in the body. */
+      rows.push({
+        minutes,
+        label: `${minutes} min`,
+        amount: null,
+        error: error.message,
+        detail: error instanceof GophrError && error.body
+          ? JSON.stringify(error.body).slice(0, 300)
+          : null,
+        /* The wall-clock time the deadline landed on, so an end-of-day
+         * refusal is obvious at a glance rather than needing arithmetic. */
+        at: iso,
+      });
     }
   }
 
