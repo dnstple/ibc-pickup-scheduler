@@ -826,3 +826,62 @@ export async function cancelJob(jobId, reason = "Order cancelled") {
   });
   return payload;
 }
+
+/* ==================================================================== */
+/* READING A JOB BACK                                                    */
+/*                                                                       */
+/* WHY: the customer was not messaged on the one live job, and there are */
+/* only two explanations — either Gophr never received a way to reach    */
+/* them, or it received one and chose not to use it. Those need          */
+/* different fixes, and guessing between them is how we spend another    */
+/* £10 learning nothing.                                                 */
+/*                                                                       */
+/* This asks Gophr what it actually stored. `dropoff_email` and          */
+/* `dropoff_mobile_number` coming back populated rules our end out; both */
+/* empty means the order carried no contact details and the fix is on    */
+/* our side, in what we send.                                            */
+/*                                                                       */
+/* Read-only. GET changes nothing, costs nothing and works on a          */
+/* cancelled job, which matters because the only real job we have is     */
+/* cancelled.                                                            */
+
+export async function fetchJob(jobId) {
+  if (!jobId) throw new GophrError("No job id to look up.");
+  const path = `/jobs/${encodeURIComponent(String(jobId).trim())}`;
+  const payload = await call(path, { method: "GET", timeoutMs: 12000 });
+  return { request: { path }, response: payload, job: readJob(payload) };
+}
+
+/**
+ * The contact details Gophr holds for a job, pulled out of its own answer.
+ *
+ * Gophr has moved these between the job and the dropoff across versions, so
+ * both are searched rather than assuming a shape that was true once.
+ */
+export function contactAudit(payload) {
+  const d = payload && typeof payload === "object" && payload.data ? payload.data : payload;
+  if (!d || typeof d !== "object") return { found: false };
+
+  const dropoffs = Array.isArray(d.dropoffs) ? d.dropoffs : [];
+  const deliveries = Array.isArray(d.deliveries) ? d.deliveries : [];
+  const sources = [d, ...dropoffs, ...deliveries].filter(Boolean);
+
+  const pick = (...names) => {
+    for (const source of sources) {
+      for (const name of names) {
+        const value = source?.[name];
+        if (value !== null && value !== undefined && value !== "") return String(value);
+      }
+    }
+    return null;
+  };
+
+  return {
+    found: true,
+    dropoffEmail: pick("dropoff_email", "delivery_email", "email"),
+    dropoffMobile: pick("dropoff_mobile_number", "dropoff_mobile", "delivery_mobile_number"),
+    dropoffName: pick("dropoff_person_name", "dropoff_name"),
+    pickupMobile: pick("pickup_mobile_number", "pickup_mobile"),
+    trackerUrl: pick("public_tracker_url"),
+  };
+}

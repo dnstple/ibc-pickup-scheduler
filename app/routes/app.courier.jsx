@@ -42,6 +42,8 @@ import {
   createJob,
   confirmJob,
   cancelJob,
+  fetchJob,
+  contactAudit,
   progressDelivery,
   probeDeadline,
   probeDeadlineCurve,
@@ -188,6 +190,7 @@ export const action = async ({ request }) => {
   const intent = form.get("intent");
   const armed = isArmed(form);   /* ⚠️ LIVE TEST — delete with its block */
   if (intent === "cancel") return cancelTestJob(form.get("jobId"));
+  if (intent === "inspect") return inspectJob(form.get("inspectId"));
   if (intent === "deadline") return probeDeadlineField(form.get("deadlineMinutes"));
   if (intent === "curve") return probeCurve();
   if (intent === "event") {
@@ -444,6 +447,38 @@ async function postEvent(admin, orderName, status) {
   }
 }
 
+/* ==================================================================== */
+/* INSPECT — what did Gophr actually store for this job?                 */
+/*                                                                       */
+/* Read-only, and deliberately not guarded by the sandbox refusal: a GET */
+/* dispatches nobody, and the job worth inspecting is a production one.  */
+
+async function inspectJob(jobId) {
+  const id = String(jobId || "").trim();
+  if (!id) return { inspect: { ok: false, message: "Paste a Gophr job id first." } };
+  try {
+    const result = await fetchJob(id);
+    return {
+      inspect: {
+        ok: true,
+        jobId: id,
+        contact: contactAudit(result.response),
+        job: result.job,
+        response: result.response,
+      },
+    };
+  } catch (error) {
+    return {
+      inspect: {
+        ok: false,
+        jobId: id,
+        message: error?.message || String(error),
+        body: error?.body || null,
+      },
+    };
+  }
+}
+
 /* The sandbox guard, spelled once. It REFUSES rather than warns: a bench whose
  * whole purpose is to send half-understood requests until one sticks has no
  * business being one careless environment variable away from a real rider
@@ -646,6 +681,8 @@ export default function Courier() {
   const event = fetcher.data?.event || null;
   const [eventOrder, setEventOrder] = useState("");
   const [eventStatus, setEventStatus] = useState("OUT_FOR_DELIVERY");
+  const inspect = fetcher.data?.inspect || null;
+  const [inspectId, setInspectId] = useState("");
   const [deadlineMinutes, setDeadlineMinutes] = useState("90");
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
@@ -897,6 +934,93 @@ export default function Courier() {
               <Text as="p" tone="subdued" variant="bodySm">
                 Request shape: {SHAPE_VERSION}
               </Text>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        {/* ------------------------------------------- inspect a live job */}
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">
+                What contact details does Gophr hold for a job?
+              </Text>
+              <Text as="p" tone="subdued" variant="bodySm">
+                The customer was never messaged on the one live job, and there are only
+                two explanations: Gophr had no way to reach them, or it had one and did
+                not use it. Those need opposite fixes. This asks Gophr what it actually
+                stored. It is a GET — nothing is booked, nothing is changed, and it works
+                on a cancelled job.
+              </Text>
+
+              <InlineStack gap="300" blockAlign="end">
+                <Box minWidth="320px">
+                  <TextField
+                    label="Gophr job id"
+                    value={inspectId}
+                    onChange={setInspectId}
+                    placeholder="894de90c…"
+                    autoComplete="off"
+                    helpText="From the booking result, or the job page in Gophr."
+                  />
+                </Box>
+                <Button
+                  onClick={() => fetcher.submit({ intent: "inspect", inspectId }, { method: "POST" })}
+                  loading={running}
+                  disabled={!inspectId}
+                >
+                  Look it up
+                </Button>
+              </InlineStack>
+
+              {inspect && !inspect.ok && (
+                <Banner tone="critical" title="Could not read that job">
+                  <Text as="p">{inspect.message}</Text>
+                </Banner>
+              )}
+
+              {inspect?.ok && (
+                <BlockStack gap="200">
+                  <Banner
+                    tone={
+                      inspect.contact?.dropoffEmail || inspect.contact?.dropoffMobile
+                        ? "warning"
+                        : "critical"
+                    }
+                    title={
+                      inspect.contact?.dropoffEmail || inspect.contact?.dropoffMobile
+                        ? "Gophr had contact details and did not use them"
+                        : "Gophr had no way to reach the customer"
+                    }
+                  >
+                    <Text as="p">
+                      {inspect.contact?.dropoffEmail || inspect.contact?.dropoffMobile
+                        ? "So the silence is a Gophr account setting, not a missing field. Look for recipient notifications in the Gophr portal."
+                        : "So the fix is on our side: the order carried no phone or email into the booking."}
+                    </Text>
+                  </Banner>
+                  <List>
+                    <List.Item>
+                      Dropoff email: {inspect.contact?.dropoffEmail || "— empty —"}
+                    </List.Item>
+                    <List.Item>
+                      Dropoff mobile: {inspect.contact?.dropoffMobile || "— empty —"}
+                    </List.Item>
+                    <List.Item>
+                      Dropoff name: {inspect.contact?.dropoffName || "— empty —"}
+                    </List.Item>
+                    <List.Item>
+                      Tracker: {inspect.contact?.trackerUrl || "— none —"}
+                    </List.Item>
+                    <List.Item>Status: {inspect.job?.status || "— none —"}</List.Item>
+                  </List>
+                  <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+                    <pre style={{ margin: 0, fontSize: 11, whiteSpace: "pre-wrap" }}>
+                      {JSON.stringify(inspect.response, null, 2)}
+                    </pre>
+                  </Box>
+                </BlockStack>
+              )}
             </BlockStack>
           </Card>
         </Layout.Section>
