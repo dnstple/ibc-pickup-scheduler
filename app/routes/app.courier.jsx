@@ -31,6 +31,7 @@ import {
   TextField,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
+import { postFulfilmentEventByOrderName } from "../lib/fulfilment.server";
 import {
   gophrStatus,
   gophrEnv,
@@ -133,6 +134,10 @@ const NEEDED_SCOPES = [
     handle: "write_merchant_managed_fulfillment_orders",
     why: "mark the order fulfilled and send the customer their tracking link",
   },
+  {
+    handle: "write_fulfillments",
+    why: "post out-for-delivery and delivered events, which is what a LOCAL delivery order needs before Shopify emails anybody",
+  },
 ];
 
 async function grantedScopes(admin) {
@@ -185,6 +190,10 @@ export const action = async ({ request }) => {
   if (intent === "cancel") return cancelTestJob(form.get("jobId"));
   if (intent === "deadline") return probeDeadlineField(form.get("deadlineMinutes"));
   if (intent === "curve") return probeCurve();
+  if (intent === "event") {
+    const { admin } = await authenticate.admin(request);
+    return postEvent(admin, form.get("eventOrder"), form.get("eventStatus"));
+  }
   if (intent === "draft") return draftTestJob({ perishable, when, armed });
   if (intent === "confirm") {
     return confirmTestJob(form.get("jobId"), form.get("confirmBody"), armed);
@@ -406,6 +415,35 @@ async function probeCurve() {
   }
 }
 
+/**
+ * Fire one fulfilment event at an order and see whether Shopify emails anybody.
+ *
+ * Order #1095 was fulfilled with notifyCustomer: true and produced no email
+ * and no "shipping confirmation email was sent" event — because a LOCAL
+ * DELIVERY order does not use the shipping confirmation at all. Shopify has
+ * its own local-delivery notifications, and the evidence points at a
+ * fulfilment EVENT being what drives them.
+ *
+ * Pointed at an order by hand rather than wired into the booking path,
+ * because which status sends the email is still a guess and a guess in the
+ * booking path is a guess on every customer's order.
+ */
+async function postEvent(admin, orderName, status) {
+  const chosen = String(status || "OUT_FOR_DELIVERY");
+  try {
+    const result = await postFulfilmentEventByOrderName(admin, {
+      orderName,
+      status: chosen,
+      message: "Your order is with a courier.",
+    });
+    return { event: { ...result, status: chosen, orderName } };
+  } catch (error) {
+    return {
+      event: { ok: false, status: chosen, orderName, message: error?.message || String(error) },
+    };
+  }
+}
+
 /* The sandbox guard, spelled once. It REFUSES rather than warns: a bench whose
  * whole purpose is to send half-understood requests until one sticks has no
  * business being one careless environment variable away from a real rider
@@ -605,6 +643,9 @@ export default function Courier() {
   const booking = fetcher.data?.booking || null;
   const deadline = fetcher.data?.deadline || null;
   const curve = fetcher.data?.curve || null;
+  const event = fetcher.data?.event || null;
+  const [eventOrder, setEventOrder] = useState("");
+  const [eventStatus, setEventStatus] = useState("OUT_FOR_DELIVERY");
   const [deadlineMinutes, setDeadlineMinutes] = useState("90");
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
@@ -856,6 +897,92 @@ export default function Courier() {
               <Text as="p" tone="subdued" variant="bodySm">
                 Request shape: {SHAPE_VERSION}
               </Text>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        {/* ------------------------------------------------ notifications */}
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">Does the customer ever hear anything?</Text>
+              <Banner tone="critical" title="Today: no">
+                <Text as="p">
+                  Order #1095 was fulfilled with notify on. Shopify logged the fulfilment
+                  and sent <Text as="span" fontWeight="semibold">nothing</Text> — there is
+                  no &ldquo;shipping confirmation email was sent&rdquo; event on that order
+                  at all. A <Text as="span" fontWeight="semibold">local delivery</Text>{" "}
+                  order does not use the shipping confirmation; Shopify has its own
+                  local-delivery notifications, and they appear to be driven by a
+                  fulfilment EVENT rather than by the fulfilment itself.
+                </Text>
+              </Banner>
+              <Text as="p" tone="subdued" variant="bodySm">
+                That is a hypothesis, so it is a button rather than something wired into
+                every order. Point it at an order that is already fulfilled, pick a status,
+                and see whether an email arrives. Whichever one sends it is the one the
+                booking path should use — and Gophr&rsquo;s status webhook, when we can
+                find where to configure it, becomes the thing that decides WHEN.
+              </Text>
+
+              <InlineStack gap="300" blockAlign="end">
+                <Box minWidth="160px">
+                  <TextField
+                    label="Order"
+                    value={eventOrder}
+                    onChange={setEventOrder}
+                    placeholder="1095"
+                    autoComplete="off"
+                  />
+                </Box>
+                <Box minWidth="220px">
+                  <Select
+                    label="Status"
+                    value={eventStatus}
+                    onChange={setEventStatus}
+                    options={[
+                      { label: "OUT_FOR_DELIVERY", value: "OUT_FOR_DELIVERY" },
+                      { label: "IN_TRANSIT", value: "IN_TRANSIT" },
+                      { label: "CONFIRMED", value: "CONFIRMED" },
+                      { label: "DELIVERED", value: "DELIVERED" },
+                      { label: "READY_FOR_PICKUP", value: "READY_FOR_PICKUP" },
+                    ]}
+                  />
+                </Box>
+                <Button
+                  onClick={() =>
+                    fetcher.submit({ intent: "event", eventOrder, eventStatus }, { method: "POST" })
+                  }
+                  loading={running}
+                  disabled={!eventOrder}
+                >
+                  Post the event
+                </Button>
+              </InlineStack>
+
+              {event && (
+                <Banner tone={event.ok ? "success" : "critical"}
+                        title={event.ok ? `${event.status} posted` : "Refused"}>
+                  <BlockStack gap="200">
+                    <Text as="p">
+                      {event.ok
+                        ? "Now check the inbox. If an email arrived, that status is the one the booking path should send."
+                        : (event.message || event.reason || "No detail.")}
+                    </Text>
+                    {event.reason === "no_fulfillment" && (
+                      <Text as="p">
+                        That order has no live fulfilment, so there is nothing to attach an
+                        event to. Pick an order the courier booking already fulfilled.
+                      </Text>
+                    )}
+                    {event.reason === "order_not_found" && (
+                      <Text as="p">
+                        No single order matched that name. Use the number without the hash.
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Banner>
+              )}
             </BlockStack>
           </Card>
         </Layout.Section>

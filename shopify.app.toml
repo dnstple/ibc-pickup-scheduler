@@ -24,7 +24,15 @@ client_id = "97c44561f62e59f3612192b5d5c96d48"
 # ⚠️ THIS ONE IS NEW AND IT INVALIDATES THE ACCESS TOKEN. After deploying,
 # open the app in Shopify admin and accept the new permission before placing a
 # test order, or every call will fail authentication.
-scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_orders"
+#
+# write_fulfillments is needed to post fulfilment EVENTS (out for delivery,
+# delivered). A local delivery order gets no shipping-confirmation email from
+# creating a fulfilment alone — order #1095 proved that — and the evidence
+# points at the event being what drives Shopify's own local-delivery
+# notification.
+#
+# ⚠️ ANOTHER TOKEN INVALIDATION. Re-approve in the admin after deploying.
+scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_orders,write_fulfillments"
 
 [auth]
 redirect_urls = [ "https://ibc-pickup-scheduler.vercel.app/auth/callback" ]
