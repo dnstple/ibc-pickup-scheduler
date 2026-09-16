@@ -197,7 +197,9 @@ export const action = async ({ request }) => {
     const { admin } = await authenticate.admin(request);
     return postEvent(admin, form.get("eventOrder"), form.get("eventStatus"));
   }
-  if (intent === "draft") return draftTestJob({ perishable, when, armed });
+  if (intent === "draft") {
+    return draftTestJob({ perishable, when, armed, email: form.get("draftEmail") });
+  }
   if (intent === "confirm") {
     return confirmTestJob(form.get("jobId"), form.get("confirmBody"), armed);
   }
@@ -507,7 +509,7 @@ function refuseOutsideSandbox(armed = false) {
  * single booking button: the draft's response is the thing we need to read,
  * and reading it should not require dispatching anybody.
  */
-async function draftTestJob({ perishable, when, armed = false }) {
+async function draftTestJob({ perishable, when, armed = false, email = null }) {
   const refused = refuseOutsideSandbox(armed);
   if (refused) return refused;
 
@@ -550,6 +552,15 @@ async function draftTestJob({ perishable, when, armed = false }) {
         postcode: "WC2E 9DD",
         country_code: "GB",
       };
+
+  /* THE RECIPIENT'S EMAIL, when one is given.
+   *
+   * A draft is free and dispatches nobody, so this is the cheapest possible
+   * way to find out what Gophr does with a dropoff_email: send one, then read
+   * the job back and see whether it was stored. Answering that with a
+   * confirmed job would cost a rider. */
+  const recipientEmail = String(email || "").trim();
+  if (recipientEmail) destination.email = recipientEmail;
 
   const options = {
     destination,
@@ -683,6 +694,7 @@ export default function Courier() {
   const [eventStatus, setEventStatus] = useState("OUT_FOR_DELIVERY");
   const inspect = fetcher.data?.inspect || null;
   const [inspectId, setInspectId] = useState("");
+  const [draftEmail, setDraftEmail] = useState("");
   const [deadlineMinutes, setDeadlineMinutes] = useState("90");
   /* The draft's id, remembered across the two steps so confirming does not
    * mean copying a uuid out of a JSON blob by hand. */
@@ -697,6 +709,9 @@ export default function Courier() {
       booking.job.jobId !== draftId) {
     setDraftId(booking.job.jobId);
     setDeliveryId(booking.job.deliveryId || "");
+    /* The lookup card above wants the same id, and copying a uuid between two
+     * fields on one page is a step nobody should have to take. */
+    setInspectId(booking.job.jobId);
   }
 
   const run = (perishable) => {
@@ -1374,11 +1389,21 @@ export default function Courier() {
                   Garden — about a mile, inside Zone A, and the same destination the
                   quote bench uses so the two can be compared.
                 </Text>
-                <InlineStack gap="300">
+                <InlineStack gap="300" blockAlign="end">
+                  <Box minWidth="280px">
+                    <TextField
+                      label="Recipient email (optional)"
+                      value={draftEmail}
+                      onChange={setDraftEmail}
+                      placeholder="you@example.com"
+                      autoComplete="off"
+                      helpText="Sent as dropoff_email. Use your own address to find out whether Gophr ever writes to a recipient."
+                    />
+                  </Box>
                   <Button
                     onClick={() =>
                       fetcher.submit(
-                        { intent: "draft", perishable: "false", when, liveConfirm },
+                        { intent: "draft", perishable: "false", when, liveConfirm, draftEmail },
                         { method: "POST" }
                       )
                     }
