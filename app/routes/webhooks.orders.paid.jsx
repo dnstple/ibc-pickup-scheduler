@@ -50,6 +50,7 @@ const ORDER_QUERY = `
       processedAt
       email
       phone
+      note
       customAttributes { key value }
       totalWeight
       shippingAddress {
@@ -61,9 +62,30 @@ const ORDER_QUERY = `
         zip
         countryCodeV2
       }
+      /* WHAT THE CUSTOMER TYPED AT CHECKOUT.
+       *
+       * Local delivery shows an "Add delivery instructions" field, and what
+       * goes in it lands HERE — on the fulfilment order's delivery method,
+       * not on the address and not on the order note. Nothing was reading it,
+       * so "flat 3, ring the top bell" was collected from the customer and
+       * then thrown away before the rider ever saw it.
+       *
+       * The same object carries a phone, which is the number the buyer gave
+       * FOR THE DELIVERY. Preferred over the address phone for exactly that
+       * reason. */
+      fulfillmentOrders(first: 5) {
+        nodes {
+          deliveryMethod {
+            methodType
+            presentedName
+            additionalInformation { instructions phone }
+          }
+        }
+      }
       lineItems(first: 50) {
         nodes {
           quantity
+          title
           product {
             perishable: metafield(namespace: "custom", key: "pickup_delay_minutes") { value }
           }
@@ -139,15 +161,28 @@ function orderRef(order) {
   return id.split("/").pop() || "order";
 }
 
+/** What the buyer told checkout about getting the parcel to them. */
+function deliveryExtras(order) {
+  const method = (order?.fulfillmentOrders?.nodes || [])
+    .map((node) => node?.deliveryMethod)
+    .find((m) => m && m.methodType !== "PICK_UP");
+  return {
+    instructions: String(method?.additionalInformation?.instructions || "").trim(),
+    phone: String(method?.additionalInformation?.phone || "").trim(),
+  };
+}
+
 /** The dropoff, as Gophr wants it, from the order's shipping address. */
 function destinationFrom(order) {
   const a = order?.shippingAddress || {};
+  const extras = deliveryExtras(order);
   return {
     name: a.name || "",
-    /* The checkout collects a mobile for local delivery — it is a required
-     * field on that rate — so this is normally present. The order's own phone
-     * is the fallback for an order placed by other means. */
-    mobile: normalizeMobile(a.phone || order?.phone || ""),
+    /* THE DELIVERY PHONE FIRST. `additionalInformation.phone` is the number
+     * the buyer gave for the delivery itself, which is a better number to put
+     * in a rider's hand than whatever is attached to the billing address. The
+     * address phone and the order phone remain as fallbacks. */
+    mobile: normalizeMobile(extras.phone || a.phone || order?.phone || ""),
     email: order?.email || "",
     address1: a.address1 || "",
     address2: a.address2 || "",
@@ -317,9 +352,21 @@ export const action = async ({ request }) => {
           city: booking.pickup_city,
           postcode: booking.pickup_postcode,
         },
-        dropoffNotes: first.intent?.label
-          ? `Delivery window: ${first.intent.label}`
-          : undefined,
+        /* THE CUSTOMER'S OWN WORDS FIRST, then the window.
+         *
+         * A rider reads the top of a note and acts on it. "Flat 3, ring the
+         * top bell" is what gets the parcel through a door; the window is
+         * context. Putting the window first would bury the only sentence that
+         * changes what the rider does. */
+        dropoffNotes: [
+          deliveryExtras(order).instructions,
+          first.intent?.label ? `Delivery window: ${first.intent.label}` : "",
+        ].filter(Boolean).join(" — ") || undefined,
+        /* AND SOMETHING FOR THE COLLECTION END. Riders were previously sent to
+         * 29 Rathbone Place with no instructions at all on a real order — only
+         * the test bench ever supplied any. A shop front with a counter needs
+         * to say so, and the order number is what the staff will look for. */
+        pickupNotes: `Order ${orderRef(order)} — ask at the counter.`,
       },
       {
         approve: async (draft) => {
