@@ -25,6 +25,7 @@ import {
   gophrInstant,
   normalizeMobile,
   packedGrams,
+  deadlineFor,
 } from "../app/lib/courier-booking.js";
 
 /* An order as Shopify's GraphQL returns it, with only the parts that matter. */
@@ -747,4 +748,78 @@ test("but an address that cannot be saved blank is reported as an error", () => 
 test("packaging settings are validated", () => {
   assert.ok(validateBooking(normalizeBooking({ packaging_percent: 500 }))["booking.packaging_percent"]);
   assert.deepEqual(validateBooking(normalizeBooking({ packaging_percent: 15 })), {});
+});
+
+/* ------------------------------------------------------------------ deadline */
+
+test("THE DEADLINE IS THE END OF THE WINDOW THE CUSTOMER CHOSE", () => {
+  /* Without it Gophr gives every job until 23:55 and the rider takes other
+   * work while the ETA slides — watched happening on a live job. */
+  const { iso } = deadlineFor({
+    windowEnd: "2026-09-16T18:30:00+01:00",
+    pickupIso: "2026-09-16T15:00:00+00:00",
+  });
+  assert.equal(iso, "2026-09-16T17:30:00+00:00");
+});
+
+test("it is spelled the way Gophr accepts, like every other instant", () => {
+  const { iso } = deadlineFor({
+    windowEnd: "2026-09-16T18:30:00.000Z",
+    pickupIso: "2026-09-16T15:00:00+00:00",
+  });
+  assert.match(iso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+});
+
+test("A DEADLINE ON A DIFFERENT DAY IS DROPPED, NOT SENT", () => {
+  /* Gophr's own 422: "Earliest pickup time and delivery deadline must be on
+   * the same day." Sending it anyway would fail the whole booking, and a
+   * rider with a loose deadline beats no rider at all. */
+  const { iso, reason } = deadlineFor({
+    windowEnd: "2026-09-17T09:00:00+01:00",
+    pickupIso: "2026-09-16T22:00:00+00:00",
+  });
+  assert.equal(iso, null);
+  assert.equal(reason, "different_day");
+});
+
+test("same day is judged in LONDON, not in UTC", () => {
+  /* At half past midnight BST the two calendars disagree, and the shop's
+   * clock is the one Gophr means. */
+  const londonSameDay = deadlineFor({
+    windowEnd: "2026-07-01T00:30:00+01:00",   // 1 July in London, 30 June UTC
+    pickupIso: "2026-06-30T23:00:00+01:00",   // 30 June in London
+  });
+  assert.equal(londonSameDay.reason, "different_day");
+});
+
+test("a deadline before the collection is a mistake, not a deadline", () => {
+  const { iso, reason } = deadlineFor({
+    windowEnd: "2026-09-16T14:00:00+00:00",
+    pickupIso: "2026-09-16T15:00:00+00:00",
+  });
+  assert.equal(iso, null);
+  assert.equal(reason, "ends_before_pickup");
+});
+
+test("an order with no machine window sends no deadline, as before", () => {
+  assert.equal(deadlineFor({ windowEnd: "", pickupIso: "2026-09-16T15:00:00+00:00" }).iso, null);
+  assert.equal(deadlineFor({ windowEnd: "3:00–5:00pm", pickupIso: "2026-09-16T15:00:00+00:00" }).reason,
+    "bad_window_end");
+});
+
+test("the plan carries the deadline through to the booking", () => {
+  const plan = courierPlan({ order: sameday(), booking: {}, now: NOW });
+  assert.equal(plan.act, "quote");
+  /* The fixture's window is 14:00–16:00 UTC, pickup 13:30. */
+  assert.equal(plan.deadlineIso, "2026-09-15T16:00:00+00:00");
+});
+
+test("AND THE ORDINARY CASE IS IN GOPHR'S FREE BAND", () => {
+  /* Measured: a deadline 180 minutes out or more costs nothing, while 60
+   * minutes costs +£7.73. A two-hour window opening ninety minutes after the
+   * order ends 210 minutes out, so the shop never pays the urgency premium
+   * on a normal order. This asserts the shape of that, not the price. */
+  const plan = courierPlan({ order: sameday(), booking: {}, now: NOW });
+  const minutes = (new Date(plan.deadlineIso) - NOW) / 60000;
+  assert.ok(minutes >= 180, `deadline only ${minutes} minutes out`);
 });

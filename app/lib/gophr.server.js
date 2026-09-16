@@ -409,6 +409,10 @@ export function buildJobBody({
   reference = null,
   pickupNotes = null,
   dropoffNotes = null,
+  /* THE END OF THE CUSTOMER'S WINDOW. Omitted when null, which is what Gophr
+   * saw on every job before this existed — and why it defaulted them all to
+   * 23:55. Free past three hours; see deadlineFor() for the measured curve. */
+  dropoffDeadline = null,
   /* WHERE THE COURIER COLLECTS, supplied by the caller.
    *
    * PICKUP remains as the default so the test bench and anything else that
@@ -442,6 +446,7 @@ export function buildJobBody({
   };
   if (destination.address2) dropoff.dropoff_address2 = String(destination.address2);
   if (destination.email) dropoff.dropoff_email = String(destination.email);
+  if (dropoffDeadline) dropoff.dropoff_deadline = String(dropoffDeadline);
   if (dropoffNotes) dropoff.dropoff_instructions = String(dropoffNotes);
 
   const body = {

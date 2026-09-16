@@ -14,6 +14,7 @@
 // can break the other.
 
 import { attributesToObject } from "./order-booking.js";
+import { zonedParts } from "./timezone.js";
 
 /* ------------------------------------------------------------------ keys */
 
@@ -490,6 +491,63 @@ export function pickupTime({ windowStart, settings, now = new Date() }) {
   return { iso: gophrInstant(at), reason: null };
 }
 
+/* ------------------------------------------------------------------ deadline */
+
+/* The shop's clock. "Same day" is a question about London, not about UTC, and
+ * at 00:30 BST the two disagree. */
+const TZ = "Europe/London";
+
+/**
+ * The deadline to give Gophr: the end of the window the customer chose.
+ *
+ * WHY THIS EXISTS AT ALL. Until now nothing sent a deadline, so Gophr
+ * defaulted to the end of the day — a live job booked for a 15:38–16:38
+ * window was given until 23:55, and the rider quite properly took other work
+ * while the ETA slid. The window was promised in the basket and never passed
+ * on to the only party who could keep it.
+ *
+ * WHY IT IS FREE. Measured, not assumed:
+ *
+ *     no deadline   £9.42          180 min   £9.42   ← free
+ *     60 min       £17.15          240 min   £9.42
+ *     90 min       £16.58          300 min   £9.42
+ *     120 min      £13.85
+ *
+ * Gophr prices URGENCY, and past three hours there is none to price. A
+ * two-hour window opening ninety minutes after the order ends 210 minutes
+ * out, so the ordinary case is always in the free band. Tighter windows cost
+ * more and the circuit breaker already judges that on its merits.
+ *
+ * THE ONE RULE GOPHR ENFORCES, quoted from its own 422:
+ *   "Earliest pickup time and delivery deadline must be on the same day."
+ *
+ * A deadline that breaks it is DROPPED rather than sent. Failing open costs
+ * the promise; failing closed costs the whole booking, and a rider with a
+ * loose deadline beats no rider at all.
+ */
+export function deadlineFor({ windowEnd, pickupIso, timeZone = TZ }) {
+  if (!windowEnd) return { iso: null, reason: "no_window_end" };
+
+  const end = new Date(windowEnd);
+  if (Number.isNaN(end.getTime())) return { iso: null, reason: "bad_window_end" };
+
+  const pickup = pickupIso ? new Date(pickupIso) : null;
+  if (!pickup || Number.isNaN(pickup.getTime())) {
+    return { iso: null, reason: "no_pickup" };
+  }
+
+  /* A deadline before the collection is not a deadline, it is a mistake. */
+  if (end.getTime() <= pickup.getTime()) {
+    return { iso: null, reason: "ends_before_pickup" };
+  }
+
+  if (zonedParts(end, timeZone).dateStr !== zonedParts(pickup, timeZone).dateStr) {
+    return { iso: null, reason: "different_day" };
+  }
+
+  return { iso: gophrInstant(end), reason: null };
+}
+
 /* ------------------------------------------------------------------ writes */
 
 /** What goes onto the order when a job is booked. */
@@ -622,9 +680,17 @@ export function courierPlan({ order, booking, quote = null, now = new Date() }) 
     };
   }
 
+  const deadline = deadlineFor({ windowEnd: intent.windowEnd, pickupIso: when.iso });
+
   /* Nothing to judge yet — the caller has not quoted. */
   if (quote === null) {
-    return { act: "quote", pickupIso: when.iso, intent };
+    return {
+      act: "quote",
+      pickupIso: when.iso,
+      deadlineIso: deadline.iso,
+      deadlineReason: deadline.reason,
+      intent,
+    };
   }
 
   const quotePence = toPence(quote?.grossAmount ?? quote?.gross ?? null);
@@ -660,6 +726,8 @@ export function courierPlan({ order, booking, quote = null, now = new Date() }) 
   return {
     act: "book",
     pickupIso: when.iso,
+    deadlineIso: deadline.iso,
+    deadlineReason: deadline.reason,
     quotePence,
     marginPence: verdict.marginPence,
     intent,

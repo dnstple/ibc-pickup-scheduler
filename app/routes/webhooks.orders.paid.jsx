@@ -305,6 +305,10 @@ export const action = async ({ request }) => {
         destination,
         parcel: parcelFrom(order, booking),
         earliestPickup: first.pickupIso,
+        /* The end of the window the customer chose. Costs nothing at the
+         * lengths this shop promises, and without it Gophr gives every job
+         * until 23:55. */
+        dropoffDeadline: first.deadlineIso,
         externalId: orderRef(order),
         reference: order.name || undefined,
         origin: {
