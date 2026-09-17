@@ -110,28 +110,43 @@ export function cartValidationsGenerateRun(input) {
     );
   }
 
-  /* ---- the courier charge is actually in the basket ------------------- */
-  let paidPence = 0;
+  /* ---- the right rung is actually in the basket ----------------------- */
+  /*
+   * BY SKU, NOT BY WHAT WAS PAID.
+   *
+   * The first version added up what the delivery line cost and compared that
+   * to the tier price. It read correctly and it was wrong: an order-level
+   * discount code discounts every line in the basket, the courier charge
+   * included, so a 100% code took the delivery to £0 and the guard announced
+   * that the charge was missing. It was not missing. It was discounted —
+   * which is a thing the shop chose to do, not an attack on the basket.
+   *
+   * What this check is really asking is "did the customer put the RIGHT RUNG
+   * in their basket", and a SKU answers that without caring what was billed.
+   * IBC-DEL-1195 is the £11.95 rung whatever a discount code does to it.
+   *
+   * The money question is asked elsewhere and better: the booking guard
+   * re-quotes the real journey against what the order actually carries, and
+   * refuses to dispatch a rider it cannot afford. Two checks, two questions,
+   * neither pretending to be the other.
+   */
+  const wantedSku = `IBC-DEL-${String(Math.round(pricePence)).padStart(4, "0")}`;
+
+  let found = false;
+  let wrongRung = false;
   for (const line of cart?.lines || []) {
     const merchandise = line?.merchandise;
     if (merchandise?.__typename !== "ProductVariant") continue;
     if (merchandise?.product?.handle !== LADDER_HANDLE) continue;
-    const amount = Number(line?.cost?.totalAmount?.amount);
-    if (Number.isFinite(amount)) paidPence += Math.round(amount * 100);
+    if (String(merchandise?.sku || "") === wantedSku) found = true;
+    else wrongRung = true;
   }
 
-  if (paidPence <= 0) {
+  if (!found) {
     return refuse(
-      "The same-day delivery charge is missing from your basket. Go back and choose your delivery time again."
-    );
-  }
-
-  /* A PENNY EITHER WAY IS FINE, A POUND IS NOT. Rounding between Shopify's
-   * decimal amounts and our pence should never drift, but refusing an order
-   * over a rounding error would be its own kind of failure. */
-  if (Math.abs(paidPence - pricePence) > 1) {
-    return refuse(
-      "The same-day delivery charge in your basket does not match the time you chose. Go back and choose your delivery time again."
+      wrongRung
+        ? "The same-day delivery charge in your basket does not match the time you chose. Go back and choose your delivery time again."
+        : "The same-day delivery charge is missing from your basket. Go back and choose your delivery time again."
     );
   }
 

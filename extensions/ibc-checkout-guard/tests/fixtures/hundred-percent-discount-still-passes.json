@@ -36,15 +36,15 @@
           {
             "cost": {
               "totalAmount": {
-                "amount": "8.95"
+                "amount": "0.00"
               }
             },
             "merchandise": {
               "__typename": "ProductVariant",
+              "sku": "IBC-DEL-1195",
               "product": {
                 "handle": "ibc-same-day-delivery"
-              },
-              "sku": "IBC-DEL-0895"
+              }
             }
           }
         ]
@@ -54,12 +54,7 @@
       "operations": [
         {
           "validationAdd": {
-            "errors": [
-              {
-                "message": "The same-day delivery charge in your basket does not match the time you chose. Go back and choose your delivery time again.",
-                "target": "$.cart"
-              }
-            ]
+            "errors": []
           }
         }
       ]

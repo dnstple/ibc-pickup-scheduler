@@ -43,7 +43,8 @@
               "__typename": "ProductVariant",
               "product": {
                 "handle": "ibc-same-day-delivery"
-              }
+              },
+              "sku": "IBC-DEL-1195"
             }
           }
         ]

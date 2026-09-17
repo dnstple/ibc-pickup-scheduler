@@ -15,6 +15,7 @@ query CartValidationsGenerateRunInput {
       merchandise {
         __typename
         ... on ProductVariant {
+          sku
           product { handle }
         }
       }

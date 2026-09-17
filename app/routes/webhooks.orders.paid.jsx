@@ -62,17 +62,21 @@ const ORDER_QUERY = `
         zip
         countryCodeV2
       }
-      /* WHAT THE CUSTOMER TYPED AT CHECKOUT.
-       *
-       * Local delivery shows an "Add delivery instructions" field, and what
-       * goes in it lands HERE — on the fulfilment order's delivery method,
-       * not on the address and not on the order note. Nothing was reading it,
-       * so "flat 3, ring the top bell" was collected from the customer and
-       * then thrown away before the rider ever saw it.
-       *
-       * The same object carries a phone, which is the number the buyer gave
-       * FOR THE DELIVERY. Preferred over the address phone for exactly that
-       * reason. */
+      # WHAT THE CUSTOMER TYPED AT CHECKOUT.
+      #
+      # GraphQL comments start with a hash. A JavaScript block comment here
+      # is a syntax error, and because this is a template literal nothing
+      # catches it until Shopify answers 'unexpected invalid token' — which
+      # is what stopped order #1097 from booking a rider at all.
+      #
+      # Local delivery shows an "Add delivery instructions" field, and what
+      # goes in it lands HERE: on the fulfilment order's delivery method, not
+      # on the address and not on the order note. Nothing was reading it, so
+      # "flat 3, ring the top bell" was collected from the customer and then
+      # thrown away before the rider ever saw it.
+      #
+      # The same object carries a phone, which is the number the buyer gave
+      # FOR THE DELIVERY. Preferred over the address phone for that reason.
       fulfillmentOrders(first: 5) {
         nodes {
           deliveryMethod {
