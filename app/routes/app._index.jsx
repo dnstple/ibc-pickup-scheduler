@@ -676,42 +676,6 @@ function BookingCard({ booking, sameday, errors, updateBooking, updateSameday })
           </BlockStack>
         </Box>
 
-        {/* ================================================================= */}
-        {/* ⚠️  LIVE TEST SCAFFOLDING — DELETE THIS BLOCK BEFORE HANDING OVER  */}
-        <Divider />
-        <Banner
-          tone={sameday?.test_now_enabled ? "critical" : "warning"}
-          title={
-            sameday?.test_now_enabled
-              ? "A TEST WINDOW IS SHOWING IN THE BASKET RIGHT NOW"
-              : "Test window (staff only)"
-          }
-        >
-          <BlockStack gap="300">
-            <Text as="p">
-              Adds a window to the basket that collects <Text as="span" fontWeight="semibold">
-              right now</Text>, ignoring the lead time, the cut-off and the end of the day.
-              It is there so a real order can be placed through the real website and put a
-              rider on the road in minutes rather than in two hours.
-            </Text>
-            <Checkbox
-              label="Show a COLLECT NOW window in the basket"
-              checked={sameday?.test_now_enabled === true}
-              onChange={(v) => updateSameday({ test_now_enabled: v })}
-              helpText="Turn this off the moment the test is done."
-            />
-            {sameday?.test_now_enabled && (
-              <Text as="p" fontWeight="semibold">
-                Anyone who can reach the basket can see and choose this window. Only leave
-                it on while the theme it runs in is unpublished, and turn it off afterwards.
-              </Text>
-            )}
-            <Text as="p" tone="subdued" variant="bodySm">
-              Scaffolding. Marked for deletion in the code — grep for LIVE TEST.
-            </Text>
-          </BlockStack>
-        </Banner>
-        {/* ==== END LIVE TEST SCAFFOLDING ================================== */}
 
         <Divider />
 
