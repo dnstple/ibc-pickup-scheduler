@@ -67,10 +67,19 @@ export function clearQuoteCache() {
  * one tier failing must not take the other three down with it.
  */
 async function priceTier({ tier, destination, grams, perishable, dayStart, pickupIso, now }) {
-  const deadline = tier.openEnded && !tier.quoteOpenEnded
-    ? null
-    : deadlineInstant(dayStart, tier.deadlineMinutes);
-  const deadlineIso = deadline ? gophrInstant(deadline) : null;
+  /* THE DEADLINE AS A REAL INSTANT, IN LONDON.
+   *
+   * Supplied by the caller wherever possible, because only the caller knows
+   * the shop's date, and "6pm" is a question about London rather than about
+   * the server. Vercel runs in UTC: computing it here from the machine's own
+   * midnight put every deadline an hour out through British Summer Time,
+   * which is a wrong price at best and a refused quote at worst. */
+  const deadlineIso = tier.deadlineIso
+    ? tier.deadlineIso
+    : (() => {
+        const fallback = deadlineInstant(dayStart, tier.deadlineMinutes);
+        return fallback ? gophrInstant(fallback) : null;
+      })();
 
   const key = cacheKey({ postcode: destination.postcode, grams, perishable, deadlineIso, pickupIso });
   sweep(now);
@@ -135,7 +144,13 @@ export async function priceTiers({
   pickupIso = null,
   now = Date.now(),
 }) {
-  const destination = { postcode: String(postcode || "").trim(), address1, city: "London" };
+  /* GOPHR WANTS A STREET LINE, and at basket time nobody has typed one — the
+   * customer has given a postcode and nothing else. Sending an empty string
+   * is sending a field Gophr has to reject or guess at, so the postcode goes
+   * in both places: it is the truest thing we know about where this is
+   * going, and it is what Gophr geocodes from anyway. */
+  const clean = String(postcode || "").trim();
+  const destination = { postcode: clean, address1: address1 || clean, city: "London" };
   /* PACKED weight, not the contents' weight. The box, the ribbon and the ice
    * pack are what the rider actually carries, and the booking path already
    * adds them — a quote that left them out would be cheaper than the job. */

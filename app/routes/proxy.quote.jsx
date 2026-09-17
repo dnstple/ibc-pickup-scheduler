@@ -23,8 +23,8 @@ import { loadSettings } from "../lib/settings.server";
 import { zoneForPostcode, outwardCode } from "../lib/sameday";
 import { tiersFor, cakeNotice, DEFAULT_TIER_SETTINGS } from "../lib/tiers";
 import { priceTiers } from "../lib/quote-tiers.server";
-import { pickupTime } from "../lib/courier-booking";
-import { zonedParts, timeToMinutes } from "../lib/timezone";
+import { pickupTime, gophrInstant } from "../lib/courier-booking";
+import { zonedParts, timeToMinutes, wallTimeToInstant } from "../lib/timezone";
 
 const TZ = "Europe/London";
 
@@ -211,8 +211,23 @@ export const action = async ({ request }) => {
     now,
   });
 
+  /* EVERY DEADLINE AS A LONDON INSTANT, WORKED OUT HERE.
+   *
+   * The tier engine deals in minutes past midnight because that is what a
+   * clock face is. Turning those into real instants needs the shop's date
+   * and the shop's zone, and this is the only place that has both — Vercel
+   * runs in UTC, so anything downstream doing the arithmetic itself would be
+   * an hour out for seven months of the year. */
+  const dayStr = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+  const withDeadlines = tiers.map((tier) => {
+    const hh = String(Math.floor(tier.deadlineMinutes / 60)).padStart(2, "0");
+    const mm = String(tier.deadlineMinutes % 60).padStart(2, "0");
+    const instant = wallTimeToInstant(dayStr, `${hh}:${mm}`, TZ);
+    return { ...tier, deadlineIso: instant ? gophrInstant(instant) : null };
+  });
+
   const priced = await priceTiers({
-    tiers,
+    tiers: withDeadlines,
     postcode,
     contentsGrams,
     settings: { booking },
