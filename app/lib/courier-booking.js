@@ -26,6 +26,17 @@ export const SAMEDAY_READ_KEYS = [
   "delivery_label",
   "delivery_window_start",
   "delivery_window_end",
+  /* THE TIER, ADDED RATHER THAN SUBSTITUTED.
+   *
+   * The two window keys go on meaning exactly what they always meant, so
+   * every order already placed still reads correctly and nothing downstream
+   * had to be taught a new word. These four are the tier's own facts: which
+   * one was bought, the deadline it promises, when the basket is ready to
+   * leave, and what the customer actually paid for it. */
+  "delivery_tier",
+  "delivery_deadline",
+  "delivery_ready_at",
+  "delivery_price_pence",
 ];
 
 /* The attributes THIS module writes. Prefixed `ibc_courier_` to sit beside
@@ -262,6 +273,25 @@ export function courierIntent(order) {
     label,
     windowStart: String(attributes.delivery_window_start || "").trim() || null,
     windowEnd: String(attributes.delivery_window_end || "").trim() || null,
+    /* THE TIER, WHERE THE ORDER CARRIES ONE.
+     *
+     * An order placed before tiers existed carries none of these, and must
+     * go on booking exactly as it did — hence null rather than a default.
+     * The caller decides what to do with the absence; inventing a deadline
+     * for an order that never bought one would be inventing a promise. */
+    tier: String(attributes.delivery_tier || "").trim() || null,
+    deadline: String(attributes.delivery_deadline || "").trim() || null,
+    readyAt: String(attributes.delivery_ready_at || "").trim() || null,
+    /* ALREADY PENCE. toPence() turns pounds into pence and would have read
+     * £11.95 out of "1195" as £1,195.00 — caught by a test that expected the
+     * guard to refuse a £17.50 quote and watched it book instead. The name
+     * of the attribute is the unit; parse it, do not convert it. */
+    pricePence: (() => {
+      const raw = String(attributes.delivery_price_pence || "").trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+    })(),
   };
 }
 
@@ -668,7 +698,20 @@ export function courierPlan({ order, booking, quote = null, now = new Date() }) 
    * fell back to the defaults. It would have started silently obeying the
    * wrong numbers the day anybody added a top-level key with one of those
    * names. */
-  const when = pickupTime({ windowStart: intent.windowStart, settings: b, now });
+  /* WHEN TO ASK FOR THE RIDER.
+   *
+   * A tier order already knows: delivery_ready_at is the moment the basket
+   * can be handed over, and the basket's own preparation — an hour more for
+   * a whole cake — is already inside it. So the usual offset is set to zero
+   * rather than applied twice; subtracting another thirty minutes would put
+   * a rider at the counter while the cake was still being boxed.
+   *
+   * An older order has only a window, and falls through to the behaviour it
+   * was placed under. */
+  const readyAt = intent.readyAt || null;
+  const when = readyAt
+    ? pickupTime({ windowStart: readyAt, settings: { ...b, pickup_offset_minutes: 0 }, now })
+    : pickupTime({ windowStart: intent.windowStart, settings: b, now });
   if (!when.iso) {
     const why = when.reason === "window_passed"
       ? `The ${intent.label} window had already passed when this order was paid.`
@@ -680,7 +723,19 @@ export function courierPlan({ order, booking, quote = null, now = new Date() }) 
     };
   }
 
-  const deadline = deadlineFor({ windowEnd: intent.windowEnd, pickupIso: when.iso });
+  /* THE DEADLINE THE CUSTOMER BOUGHT.
+   *
+   * A tier IS a deadline, and it was priced as one — the customer paid for
+   * "by 2pm" and Gophr quoted for "by 2pm". Recomputing it from the window
+   * would risk booking a different promise from the one that was sold.
+   *
+   * It still goes through deadlineFor(), because the rules it enforces hold
+   * whatever the source: a deadline before the pickup, or on another day, is
+   * one Gophr refuses outright. */
+  const deadline = deadlineFor({
+    windowEnd: intent.deadline || intent.windowEnd,
+    pickupIso: when.iso,
+  });
 
   /* Nothing to judge yet — the caller has not quoted. */
   if (quote === null) {
@@ -694,7 +749,16 @@ export function courierPlan({ order, booking, quote = null, now = new Date() }) 
   }
 
   const quotePence = toPence(quote?.grossAmount ?? quote?.gross ?? null);
-  const bandPence = toPence(quote?.bandPrice ?? null);
+  /* WHAT THE CUSTOMER ACTUALLY PAID, where the order says so.
+   *
+   * The guard's whole job is to compare the courier's price against the
+   * customer's, and under live pricing the customer's price is on the order
+   * rather than in a zone table. A tier order checked against a zone band
+   * would be policing a number nobody was charged — the same mistake as
+   * quoting one deadline and booking another. */
+  const bandPence = intent.pricePence != null
+    ? intent.pricePence
+    : toPence(quote?.bandPrice ?? null);
   const verdict = priceVerdict({ quotePence, bandPence, settings: b });
 
   if (!verdict.ok) {
