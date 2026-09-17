@@ -86,10 +86,21 @@ test("a quote below the floor charges the floor, and says so", () => {
 });
 
 test("a quote off the top of the ladder is flagged as capped", () => {
-  const result = ladderPrice(5000);
+  const result = ladderPrice(6000);
   assert.equal(result.pence, LADDER_CEILING_PENCE);
   assert.equal(result.capped, true);
   assert.ok(result.lossPence > 100);
+});
+
+test("the Chiswick basket that started this now prices honestly", () => {
+  /* Two tiers came back reading £34.95 on a live W4 basket — the old ceiling
+   * showing through on quotes above £35.95, with the shop absorbing the
+   * difference unseen. Anything in that range now lands on a real rung. */
+  for (const quote of [3600, 3800, 4200, 4600]) {
+    const result = ladderPrice(quote);
+    assert.equal(result.capped, false, `£${quote / 100} should not cap`);
+    assert.ok(result.lossPence <= 100, `£${quote / 100} lost ${result.lossPence}p`);
+  }
 });
 
 test("a quote just past the top rung is not capped — it is an ordinary rounding", () => {
@@ -112,11 +123,11 @@ test("every rung ends in 95", () => {
   }
 });
 
-test("the ladder runs from £4.95 to £34.95 in pound steps", () => {
+test("the ladder runs from £4.95 to £49.95 in pound steps", () => {
   const rungs = ladderRungs();
   assert.equal(rungs[0], 495);
-  assert.equal(rungs[rungs.length - 1], 3495);
-  assert.equal(rungs.length, 31);
+  assert.equal(rungs[rungs.length - 1], 4995);
+  assert.equal(rungs.length, 46);
   for (let i = 1; i < rungs.length; i += 1) {
     assert.equal(rungs[i] - rungs[i - 1], 100);
   }

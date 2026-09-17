@@ -1,0 +1,23 @@
+query CartValidationsGenerateRunInput {
+  buyerJourney { step }
+  cart {
+    option: attribute(key: "delivery_option") { value }
+    method: attribute(key: "delivery_method") { value }
+    quotedPostcode: attribute(key: "delivery_postcode") { value }
+    label: attribute(key: "delivery_label") { value }
+    deadline: attribute(key: "delivery_deadline") { value }
+    pricePence: attribute(key: "delivery_price_pence") { value }
+    deliveryGroups {
+      deliveryAddress { zip }
+    }
+    lines {
+      cost { totalAmount { amount } }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          product { handle }
+        }
+      }
+    }
+  }
+}

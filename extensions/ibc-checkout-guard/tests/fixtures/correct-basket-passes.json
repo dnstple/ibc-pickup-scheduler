@@ -1,0 +1,62 @@
+{
+  "payload": {
+    "export": "cart-validations-generate-run",
+    "target": "cart.validations.generate.run",
+    "input": {
+      "buyerJourney": {
+        "step": "CHECKOUT_INTERACTION"
+      },
+      "cart": {
+        "option": {
+          "value": "sameday"
+        },
+        "method": {
+          "value": "delivery"
+        },
+        "quotedPostcode": {
+          "value": "W1T 1JG"
+        },
+        "label": {
+          "value": "By 2:00pm"
+        },
+        "deadline": {
+          "value": "2026-09-17T14:00:00+01:00"
+        },
+        "pricePence": {
+          "value": "1195"
+        },
+        "deliveryGroups": [
+          {
+            "deliveryAddress": {
+              "zip": "W1T 1JG"
+            }
+          }
+        ],
+        "lines": [
+          {
+            "cost": {
+              "totalAmount": {
+                "amount": "11.95"
+              }
+            },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "product": {
+                "handle": "ibc-same-day-delivery"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "output": {
+      "operations": [
+        {
+          "validationAdd": {
+            "errors": []
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "payload": {
+    "export": "cart-delivery-options-transform-run",
+    "target": "cart.delivery-options.transform.run",
+    "input": {
+      "cart": {
+        "option": {
+          "value": "sameday"
+        },
+        "method": {
+          "value": "delivery"
+        },
+        "quotedPostcode": {
+          "value": "W1T 1JG"
+        },
+        "tierLabel": {
+          "value": "By 2:00pm"
+        },
+        "deliveryGroups": [
+          {
+            "deliveryAddress": {
+              "zip": "SW11 4NJ"
+            },
+            "deliveryOptions": [
+              {
+                "handle": "local-1",
+                "title": "Local delivery"
+              },
+              {
+                "handle": "post-1",
+                "title": "Delivery"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "output": {
+      "operations": [
+        {
+          "deliveryOptionHide": {
+            "deliveryOptionHandle": "post-1"
+          }
+        },
+        {
+          "deliveryOptionHide": {
+            "deliveryOptionHandle": "local-1"
+          }
+        }
+      ]
+    }
+  }
+}

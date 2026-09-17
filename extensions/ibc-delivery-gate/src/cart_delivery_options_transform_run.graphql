@@ -1,0 +1,12 @@
+query CartDeliveryOptionsTransformRunInput {
+  cart {
+    option: attribute(key: "delivery_option") { value }
+    method: attribute(key: "delivery_method") { value }
+    quotedPostcode: attribute(key: "delivery_postcode") { value }
+    tierLabel: attribute(key: "delivery_label") { value }
+    deliveryGroups {
+      deliveryAddress { zip }
+      deliveryOptions { handle title }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "payload": {
+    "export": "cart-validations-generate-run",
+    "target": "cart.validations.generate.run",
+    "input": {
+      "buyerJourney": {
+        "step": "CART_INTERACTION"
+      },
+      "cart": {
+        "option": {
+          "value": "sameday"
+        },
+        "method": {
+          "value": "delivery"
+        },
+        "quotedPostcode": {
+          "value": "W1T 1JG"
+        },
+        "label": {
+          "value": ""
+        },
+        "deadline": {
+          "value": ""
+        },
+        "pricePence": {
+          "value": ""
+        },
+        "deliveryGroups": [
+          {
+            "deliveryAddress": {
+              "zip": "W1T 1JG"
+            }
+          }
+        ],
+        "lines": []
+      }
+    },
+    "output": {
+      "operations": [
+        {
+          "validationAdd": {
+            "errors": []
+          }
+        }
+      ]
+    }
+  }
+}

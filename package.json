@@ -12,7 +12,9 @@
     "test": "node --test \"tests/**/*.test.mjs\""
   },
   "type": "module",
-  "engines": { "node": ">=20.10" },
+  "engines": {
+    "node": ">=20.10"
+  },
   "dependencies": {
     "@prisma/client": "^6.6.0",
     "@remix-run/node": "2.16.7",
@@ -20,6 +22,7 @@
     "@remix-run/serve": "2.16.7",
     "@shopify/app-bridge-react": "^4.1.5",
     "@shopify/polaris": "^13.9.0",
+    "@shopify/shopify_function": "~2.0.0",
     "@shopify/shopify-app-remix": "^3.4.0",
     "@shopify/shopify-app-session-storage-prisma": "^6.0.0",
     "@vercel/remix": "2.16.7",

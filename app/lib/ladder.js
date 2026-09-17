@@ -38,8 +38,14 @@ export const RUNG_ENDING_PENCE = 95;
 export const LADDER_FLOOR_PENCE = 495;
 
 /** The dearest rung. A quote above this is not a price to put in front of a
- *  customer without a human looking at it first — see ladderPrice()'s `capped`. */
-export const LADDER_CEILING_PENCE = 3495;
+ *  customer without a human looking at it first — see ladderPrice()'s `capped`.
+ *
+ *  RAISED FROM £34.95 after a live basket to Chiswick came back with TWO
+ *  tiers both reading £34.95. Two different deadlines cannot cost the same to
+ *  the penny: it was the ceiling showing through, on quotes of £36 and more,
+ *  and the shop would have absorbed the difference without ever seeing it.
+ *  W4 is seven miles out where the measured zone was three. */
+export const LADDER_CEILING_PENCE = 4995;
 
 /**
  * Every rung, cheapest first, in pence.

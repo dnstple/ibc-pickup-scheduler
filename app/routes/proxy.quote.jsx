@@ -226,6 +226,14 @@ export const action = async ({ request }) => {
     return { ...tier, deadlineIso: instant ? gophrInstant(instant) : null };
   });
 
+  /* WHAT THE SHOP IS WILLING TO ABSORB, from its own settings rather than a
+   * constant here. The same number the booking guard uses to decide whether
+   * to dispatch, so the basket cannot offer something the booking would then
+   * refuse. */
+  const tolerancePence = Number.isFinite(Number(booking.headroom_pence))
+    ? Number(booking.headroom_pence)
+    : 500;
+
   const priced = await priceTiers({
     tiers: withDeadlines,
     postcode,
@@ -235,6 +243,19 @@ export const action = async ({ request }) => {
     pickupIso: pickup?.iso || null,
     now: Date.now(),
   });
+
+  /* ---- what each tier actually cost us, for the shop's own eyes -------- */
+  for (const tier of priced.tiers) {
+    if (tier.unavailable) {
+      console.log(`[ibc-courier:quote] ${postcode} ${tier.id}: refused — ${tier.reason}`);
+      continue;
+    }
+    console.log(
+      `[ibc-courier:quote] ${postcode} ${tier.id} by ${tier.deadlineLabel}: ` +
+        `Gophr £${(tier.quotePence / 100).toFixed(2)} -> charge £${(tier.pricePence / 100).toFixed(2)} ` +
+        `(absorbing £${(tier.lossPence / 100).toFixed(2)}${tier.capped ? ", CAPPED" : ""})`
+    );
+  }
 
   if (priced.allFailed) {
     /* Gophr is unreachable, or refused all four. Same-day disappears rather
@@ -255,6 +276,19 @@ export const action = async ({ request }) => {
     });
   }
 
+  const offerable = priced.tiers
+    .filter((t) => !t.unavailable)
+    .filter((t) => Number(t.lossPence) <= tolerancePence);
+
+  if (!offerable.length) {
+    /* Priced, but not at a price this shop is willing to wear. A distinct
+     * reason from "no courier prices": Gophr answered perfectly well, the
+     * answer was just too dear, and the customer deserves a sentence that
+     * says so rather than one implying an outage. */
+    console.log(`[ibc-courier:quote] ${postcode}: every tier past the £${(tolerancePence / 100).toFixed(2)} tolerance`);
+    return json({ ok: false, reason: "too_dear", zone: { id: zone.id, name: zone.name } });
+  }
+
   return json({
     ok: true,
     zone: { id: zone.id, name: zone.name },
@@ -267,8 +301,19 @@ export const action = async ({ request }) => {
      * a cake's extra hour is already inside it. */
     ready_at: pickup?.iso || null,
     grams: Math.round(priced.grams),
-    tiers: priced.tiers
-      .filter((t) => !t.unavailable)
+    tiers: offerable
+      /* A TIER THE SHOP WOULD LOSE TOO MUCH ON IS NOT A TIER.
+       *
+       * The ladder always charges under cost — that is the model, and a
+       * rounding of up to a pound is what it costs. But a quote that runs off
+       * the top of the ladder is a different animal: the price shown is the
+       * ceiling rather than the journey, and the difference is real money
+       * nobody chose to spend. Two tiles both reading £34.95 on a Chiswick
+       * basket is what that looks like from the outside.
+       *
+       * The shop's stated tolerance is the line. Anything past it is not
+       * offered at all — fewer tiles, honestly priced, rather than four tiles
+       * two of which quietly cost £8 each. */
       .map((t) => ({
         id: t.id,
         name: t.name,
