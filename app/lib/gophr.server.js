@@ -236,7 +236,22 @@ export function parcelFor({ grams = 500, perishable = false, id = "ibc-parcel-1"
  * says "the thing collected here is the thing delivered there". It is what
  * makes multi-drop work, and a single drop is just the one-item case.
  */
-export function buildQuoteBody({ destination, parcel, earliestPickup = null }) {
+export function buildQuoteBody({
+  destination,
+  parcel,
+  earliestPickup = null,
+  /* THE DEADLINE, WHICH IS THE WHOLE PRICE.
+   *
+   * Gophr charges for urgency and nothing else: the same Covent Garden job
+   * quoted £9.42 with no deadline, £13.85 with two hours on it and £17.15
+   * with one. So a quote without a deadline is a quote for a different
+   * product from the one the customer is choosing, and showing its price
+   * would be showing a price we will not pay.
+   *
+   * The field name was found by experiment, not documentation — see
+   * probeDeadline() below and the comment above DEADLINE_FIELDS. */
+  dropoffDeadline = null,
+}) {
   const pickup = {
     pickup_address1: PICKUP.address1,
     pickup_city: PICKUP.city,
@@ -246,18 +261,18 @@ export function buildQuoteBody({ destination, parcel, earliestPickup = null }) {
   };
   if (earliestPickup) pickup.earliest_pickup_time = earliestPickup;
 
-  return {
-    pickups: [pickup],
-    dropoffs: [
-      {
-        dropoff_address1: destination.address1 || "",
-        dropoff_city: destination.city || "London",
-        dropoff_postcode: destination.postcode,
-        dropoff_country_code: destination.country_code || "GB",
-        parcels: [parcel],
-      },
-    ],
+  const dropoff = {
+    dropoff_address1: destination.address1 || "",
+    dropoff_city: destination.city || "London",
+    dropoff_postcode: destination.postcode,
+    dropoff_country_code: destination.country_code || "GB",
+    parcels: [parcel],
   };
+  /* On the DROPOFF, because that is the end being deadlined — the same
+   * placement the probe proved and the booking body already uses. */
+  if (dropoffDeadline) dropoff.dropoff_deadline = String(dropoffDeadline);
+
+  return { pickups: [pickup], dropoffs: [dropoff] };
 }
 
 /**
@@ -335,8 +350,8 @@ export function readQuote(payload) {
 }
 
 /** Ask Gophr what a journey would cost. Returns the raw payload as well. */
-export async function quote({ destination, parcel, earliestPickup = null }) {
-  const body = buildQuoteBody({ destination, parcel, earliestPickup });
+export async function quote({ destination, parcel, earliestPickup = null, dropoffDeadline = null }) {
+  const body = buildQuoteBody({ destination, parcel, earliestPickup, dropoffDeadline });
   const payload = await call("/quotes", { method: "POST", body });
   return { request: body, response: payload, price: readQuote(payload) };
 }

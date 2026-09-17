@@ -32,7 +32,14 @@ client_id = "97c44561f62e59f3612192b5d5c96d48"
 # notification.
 #
 # ⚠️ ANOTHER TOKEN INVALIDATION. Re-approve in the admin after deploying.
-scopes = "read_products,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_orders,write_fulfillments"
+#
+# read_inventory is needed to read a variant's WEIGHT. Shopify moved weight off
+# the variant and onto its inventory item, and the quote has to know what the
+# rider is carrying: a basket quoted as a small parcel and collected as a cake
+# is the bug that put 2.1kg on a pushbike in September. Read-only.
+#
+# ⚠️ ANOTHER TOKEN INVALIDATION. Re-approve in the admin after deploying.
+scopes = "read_products,read_inventory,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_orders,write_fulfillments"
 
 [auth]
 redirect_urls = [ "https://ibc-pickup-scheduler.vercel.app/auth/callback" ]
