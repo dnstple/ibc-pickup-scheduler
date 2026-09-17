@@ -96,7 +96,16 @@ export const action = async ({ request }) => {
   }
 
   const { settings } = await loadSettings(admin);
-  const sameday = settings?.sameday || {};
+  /* SAME-DAY LIVES UNDER `delivery`, NOT AT THE TOP.
+   *
+   * normalizeSettings() nests it: settings.delivery.sameday, alongside
+   * settings.delivery.booking. Reading settings.sameday returned undefined,
+   * `enabled !== true` was therefore true, and the endpoint answered
+   * "sameday_off" to a shop that had switched same-day on — which is exactly
+   * how it looked in the basket. */
+  const delivery = settings?.delivery || {};
+  const sameday = delivery.sameday || {};
+  const booking = delivery.booking || {};
 
   if (sameday.enabled !== true) {
     /* Off is off. The theme should not have asked, but a stale page can, and
@@ -175,7 +184,7 @@ export const action = async ({ request }) => {
      * edited in the app must move the tiles the same afternoon. */
     cutoff_minutes: minutesOr(sameday.cutoff_time, DEFAULT_TIER_SETTINGS.cutoff_minutes),
     day_end_minutes: minutesOr(sameday.day_end, DEFAULT_TIER_SETTINGS.day_end_minutes),
-    ...(settings?.tiers || {}),
+    ...(delivery.tiers || {}),
   };
 
   const { tiers, prepMinutes, reason } = tiersFor({
@@ -198,7 +207,7 @@ export const action = async ({ request }) => {
    * twenty to stand in the shop. */
   const pickup = pickupTime({
     windowStart: new Date(now.getTime() + prepMinutes * 60 * 1000).toISOString(),
-    settings: { ...(settings?.booking || {}), pickup_offset_minutes: 0 },
+    settings: { ...booking, pickup_offset_minutes: 0 },
     now,
   });
 
@@ -206,7 +215,7 @@ export const action = async ({ request }) => {
     tiers,
     postcode,
     contentsGrams,
-    settings,
+    settings: { booking },
     dayStart: now,
     pickupIso: pickup?.iso || null,
     now: Date.now(),
@@ -225,6 +234,10 @@ export const action = async ({ request }) => {
     has_whole_cake: hasWholeCake,
     cake_notice: hasWholeCake ? cakeNotice(tiers, tierSettings) : "",
     prep_minutes: prepMinutes,
+    /* WHEN THE BASKET IS READY TO LEAVE. The theme writes this onto the cart
+     * as delivery_ready_at and the booking path asks the rider for then —
+     * a cake's extra hour is already inside it. */
+    ready_at: pickup?.iso || null,
     grams: Math.round(priced.grams),
     tiers: priced.tiers
       .filter((t) => !t.unavailable)
