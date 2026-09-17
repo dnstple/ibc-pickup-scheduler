@@ -222,9 +222,22 @@ export const action = async ({ request }) => {
   });
 
   if (priced.allFailed) {
-    /* Gophr is unreachable. Same-day disappears rather than showing a made-up
-     * number: a price we cannot honour is worse than no option at all. */
-    return json({ ok: false, reason: "no_courier_prices" });
+    /* Gophr is unreachable, or refused all four. Same-day disappears rather
+     * than showing a made-up number: a price we cannot honour is worse than
+     * no option at all.
+     *
+     * WHY THE REASON IS IN THE RESPONSE. "No couriers are quoting" is four
+     * different problems wearing one coat — a bad key, a malformed instant,
+     * a dropoff at the pickup's own address — and telling them apart by
+     * redeploying with more logging is slow. It is Gophr's own error text,
+     * not anybody's data, and it comes out once this is settled. */
+    const first = priced.tiers.find((t) => t.reason);
+    console.log("[ibc-courier:quote] all tiers refused:", first?.reason || "(no reason)");
+    return json({
+      ok: false,
+      reason: "no_courier_prices",
+      debug: first?.reason || null,
+    });
   }
 
   return json({
