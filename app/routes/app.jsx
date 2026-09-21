@@ -20,6 +20,12 @@ export default function App() {
       <NavMenu>
         <Link to="/app" rel="home">Fulfilment settings</Link>
         <Link to="/app/courier">Courier</Link>
+        {/* A WAY IN THAT DOES NOT DEPEND ON SHOPIFY'S HANDOFF. Settings >
+            Shipping and delivery is the usual route to this page, and while
+            the handoff was misconfigured there was no other way to reach it
+            at all. The function id is looked up by the page itself, so the
+            segment here is only a label. */}
+        <Link to="/app/delivery-customization/ibc-delivery-gate/new">Delivery gate</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

@@ -16,6 +16,12 @@ description = "t:description"
   command = ""
   path = "dist/function.wasm"
 
+  # WHERE SHOPIFY SENDS THE MERCHANT to switch this on. These were both "/"
+  # - the scaffold's placeholder - so picking this function in Settings >
+  # Shipping and delivery dropped the merchant on the app's home page, nothing
+  # was created, and the function never ran. It was written, tested and off
+  # for its whole life.
+  # See app/routes/app.delivery-customization.$functionId.$id.jsx
   [extensions.ui.paths]
-  create = "/"
-  details = "/"
+  create = "/app/delivery-customization/ibc-delivery-gate/new"
+  details = "/app/delivery-customization/ibc-delivery-gate/:id"
