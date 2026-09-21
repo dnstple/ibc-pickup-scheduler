@@ -66,6 +66,17 @@ const FUNCTIONS_QUERY = `#graphql
   }
 `;
 
+/* What is already installed. Pressing the button twice made two of these on
+ * the live shop, which is a mistake the page should catch rather than the
+ * merchant. */
+const EXISTING_QUERY = `#graphql
+  query DeliveryCustomizations {
+    deliveryCustomizations(first: 50) {
+      nodes { id title enabled }
+    }
+  }
+`;
+
 const READ_QUERY = `#graphql
   query DeliveryCustomization($id: ID!) {
     deliveryCustomization(id: $id) {
@@ -134,7 +145,18 @@ export const loader = async ({ request, params }) => {
     }
   }
 
+  let installed = [];
+  try {
+    const response = await admin.graphql(EXISTING_QUERY);
+    const body = await response.json();
+    installed = body?.data?.deliveryCustomizations?.nodes || [];
+  } catch (error) {
+    /* A courtesy, not the point. Without it the page still works. */
+    installed = [];
+  }
+
   return {
+    installed,
     functionId: found.id,
     resolved: found.resolved,
     lookupError: found.error || null,
@@ -200,7 +222,9 @@ export const action = async ({ request, params }) => {
 };
 
 export default function DeliveryCustomizationPage() {
-  const { functionId, resolved, lookupError, functions, existing, isNew } = useLoaderData();
+  const { functionId, resolved, lookupError, functions, existing, installed, isNew } =
+    useLoaderData();
+  const twins = (installed || []).filter((c) => (c.title || "").includes("Same-day gate"));
   const actionData = useActionData();
   const navigation = useNavigation();
   const busy = navigation.state === "submitting";
@@ -237,6 +261,18 @@ export default function DeliveryCustomizationPage() {
                     <List.Item key={i}>{error.message}</List.Item>
                   ))}
                 </List>
+              </Banner>
+            ) : null}
+
+            {twins.length && !saved ? (
+              <Banner tone="warning" title="One of these already exists">
+                <p>
+                  {twins.length === 1
+                    ? "There is already a gate installed."
+                    : `There are already ${twins.length} of these installed, which means it runs ${twins.length} times.`}{" "}
+                  Remove the spare under <b>Settings &rsaquo; Shipping and delivery &rsaquo;
+                  Delivery customizations</b> rather than adding another here.
+                </p>
               </Banner>
             ) : null}
 

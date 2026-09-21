@@ -26,6 +26,7 @@ export default function App() {
             at all. The function id is looked up by the page itself, so the
             segment here is only a label. */}
         <Link to="/app/delivery-customization/ibc-delivery-gate/new">Delivery gate</Link>
+        <Link to="/app/checkout-guard/ibc-checkout-guard/new">Checkout guard</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

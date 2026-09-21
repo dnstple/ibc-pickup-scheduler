@@ -15,3 +15,12 @@ description = "t:description"
   [extensions.build]
   command = ""
   path = "dist/function.wasm"
+
+  # WHERE SHOPIFY SENDS THE MERCHANT to switch this on. There was no ui.paths
+  # block here at all, so there was nowhere to send them and no way to create
+  # the validation - the same omission that left the delivery gate switched
+  # off for its whole life, one step earlier.
+  # See app/routes/app.checkout-guard.$functionId.$id.jsx
+  [extensions.ui.paths]
+  create = "/app/checkout-guard/ibc-checkout-guard/new"
+  details = "/app/checkout-guard/ibc-checkout-guard/:id"
