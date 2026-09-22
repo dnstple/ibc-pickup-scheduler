@@ -168,8 +168,8 @@ export function validateDelivery(d) {
   ]);
   if (perishableUnion.size >= 7) {
     errors["delivery.perishable_closed_weekdays"] =
-      "Between them, these two lists close every day of the week, so a " +
-      "perishable item could never be delivered. Open a day.";
+      "Between the two rows there is no day left open for a perishable item. " +
+      "Tick a day here, or open one in the row above.";
   }
 
   if (d.cutoff_enabled && timeToMinutes(d.cutoff_time) === null) {

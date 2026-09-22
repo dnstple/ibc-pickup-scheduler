@@ -916,19 +916,18 @@ function DeliveryTab({
 
               <BlockStack gap="200">
                 <Text as="h3" variant="headingSm">
-                  Days a cake cannot arrive
+                  Days a cake can arrive
                 </Text>
                 <Text as="p" tone="subdued">
-                  A cake is not limited by which days a courier runs. It is limited by
-                  how many nights it spends in transit, and a day is only one night
-                  away if you dispatch the day before. Untick a day here and it stays
-                  choosable for chocolate and disappears for anything marked
-                  perishable.
+                  A cake is not limited by which days a courier runs, but by how many
+                  nights it spends in transit &mdash; a day is only one night away if
+                  you dispatch the day before. Untick a day here and it stays
+                  choosable for chocolate while disappearing for anything perishable.
                 </Text>
                 <Text as="p" tone="subdued">
-                  This list is <Text as="span" fontWeight="semibold">added to</Text> the
-                  one above, so a day already closed there is closed for everything.
-                  A product counts as perishable when it carries the metafield{" "}
+                  A day unticked above cannot be ticked here, because nothing at all
+                  is delivered that day. A product counts as perishable when it
+                  carries the metafield{" "}
                   <Text as="span" fontWeight="semibold">custom.ibc_perishable</Text> set
                   to true.
                 </Text>
