@@ -231,7 +231,15 @@ test("settings saved before this release gain delivery defaults, unchanged", () 
   };
   const s = normalizeSettings(legacy);
   assert.equal(s.pickup_enabled, true, "absent pickup_enabled must mean on");
-  assert.deepEqual(s.delivery, DEFAULT_DELIVERY);
+  // perishable_closed_weekdays is declared null and RESOLVED by the normalizer
+  // to whatever closed_weekdays holds, so the defaults blob and the normalized
+  // result differ by exactly that one key. Spelling it out here rather than
+  // loosening the comparison: the whole point of this test is that nothing
+  // ELSE moved.
+  assert.deepEqual(s.delivery, {
+    ...DEFAULT_DELIVERY,
+    perishable_closed_weekdays: DEFAULT_DELIVERY.closed_weekdays,
+  });
   // And every pickup value the storefront already reads is untouched.
   assert.equal(s.booking_horizon_days, 14);
   assert.equal(s.slot_interval_minutes, 30);
@@ -257,4 +265,88 @@ test("a delivery error surfaces through the top-level validator", () => {
 test("pickup errors still surface when pickup is on", () => {
   const s = liveish({ booking_horizon_days: 0 });
   assert.ok(validateSettings(s).booking_horizon_days);
+});
+
+
+// A delivery blob that passes validateDelivery on its own, so a test can change
+// one thing and be sure the error it sees came from that thing.
+const liveDelivery = {
+  ...DEFAULT_DELIVERY,
+  lead_days: 1,
+  horizon_days: 60,
+};
+
+// --- perishable delivery days -------------------------------------------------
+//
+// A cake is restricted by nights in transit, not by which days a courier runs,
+// so it gets its own list of days it cannot arrive on. That list ADDS TO the
+// shop-wide one rather than replacing it.
+
+test("a shop that never set perishable days keeps its cakes exactly as restricted", () => {
+  // The upgrade has to be invisible. Until this key existed, cakes and
+  // chocolate were restricted identically, and the only value that reproduces
+  // that is the shop's own closed_weekdays.
+  const d = normalizeDelivery({ closed_weekdays: [0, 1] });
+  assert.deepEqual(d.perishable_closed_weekdays, [0, 1]);
+});
+
+test("an explicit empty list means cakes have no extra restriction", () => {
+  // Distinguishable from "never asked": [] is an answer, null is not.
+  const d = normalizeDelivery({ closed_weekdays: [0], perishable_closed_weekdays: [] });
+  assert.deepEqual(d.perishable_closed_weekdays, []);
+});
+
+test("perishable days are cleaned like any other weekday list", () => {
+  const d = normalizeDelivery({
+    closed_weekdays: [],
+    perishable_closed_weekdays: ["1", " 1 ", 3, 9, -2, "x"],
+  });
+  assert.deepEqual(d.perishable_closed_weekdays, [1, 3]);
+});
+
+test("opening every day shop-wide while closing Monday for cakes is valid", () => {
+  const d = normalizeDelivery({
+    ...liveDelivery,
+    closed_weekdays: [],
+    perishable_closed_weekdays: [1],
+  });
+  assert.deepEqual(validateDelivery(d), {});
+});
+
+test("the two lists closing every day between them is refused", () => {
+  // Each list is individually legal here. Together they leave a cake with no
+  // deliverable day at all, which the calendar would render as sixty greyed
+  // squares and no explanation.
+  const d = normalizeDelivery({
+    ...liveDelivery,
+    closed_weekdays: [0, 1, 2],
+    perishable_closed_weekdays: [3, 4, 5, 6],
+  });
+  assert.ok(validateDelivery(d)["delivery.perishable_closed_weekdays"]);
+});
+
+test("a perishable list inside the shop-wide one is not refused", () => {
+  const d = normalizeDelivery({
+    ...liveDelivery,
+    closed_weekdays: [0, 1, 2, 3, 4, 5],
+    perishable_closed_weekdays: [0, 1],
+  });
+  assert.deepEqual(validateDelivery(d), {});
+});
+
+test("the summary names only the days cakes lose on top of the shop-wide ones", () => {
+  const text = summarizeDelivery({
+    ...liveDelivery,
+    closed_weekdays: [0],
+    perishable_closed_weekdays: [0, 1],
+  });
+  assert.match(text, /No deliveries on Sunday\./);
+  assert.match(text, /Perishable items also cannot arrive on Monday\./);
+});
+
+test("the summary stays silent when cakes are no more restricted than anything else", () => {
+  // The inherited case, which is every shop on the day this ships. Repeating
+  // the same days in a second sentence reads as a contradiction.
+  const text = summarizeDelivery({ ...liveDelivery, closed_weekdays: [0, 1] });
+  assert.doesNotMatch(text, /Perishable items/);
 });

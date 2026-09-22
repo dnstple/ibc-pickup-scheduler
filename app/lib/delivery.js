@@ -31,6 +31,24 @@ export const DEFAULT_DELIVERY = {
   horizon_days: 60,
   // Weekdays couriers do not deliver, as Sunday=0 indices.
   closed_weekdays: [0],
+  // Weekdays a PERISHABLE item additionally cannot arrive on, same indices.
+  //
+  // A cake is not restricted by which days a courier runs. It is restricted by
+  // how many nights it spends in the network, and a day is only reachable in
+  // one night if the shop dispatches the day before. So the two rules are
+  // different questions and want different lists:
+  //
+  //   closed_weekdays             nothing at all can be delivered
+  //   perishable_closed_weekdays  a cake cannot, though chocolate can
+  //
+  // The second is added to the first, never instead of it, so a day closed
+  // shop-wide stays closed for everything.
+  //
+  // DEFAULTED IN normalizeDelivery TO WHATEVER closed_weekdays HOLDS, not to a
+  // literal here. A shop that saved its settings before this key existed must
+  // keep its cakes exactly as restricted as they were, and the only value that
+  // guarantees that is the one it already had. See the note there.
+  perishable_closed_weekdays: null,
   // Orders placed after this local time count from the next day.
   cutoff_enabled: false,
   cutoff_time: "14:00",
@@ -76,6 +94,34 @@ export function normalizeDelivery(raw) {
     ),
   ].sort((a, b) => a - b);
 
+  // PERISHABLE DAYS INHERIT THE SHOP-WIDE LIST WHEN UNSET.
+  //
+  // null means "this shop has never been asked the question". Every such shop
+  // was, until now, restricting cakes and chocolate identically, so inheriting
+  // closed_weekdays reproduces its current behaviour exactly and the upgrade
+  // is invisible. An explicit [] is a different statement -- "cakes have no
+  // extra restriction" -- and is honoured.
+  //
+  // Note this runs AFTER closed_weekdays has been cleaned above, so the
+  // inherited list is already normalized.
+  let pDays = d.perishable_closed_weekdays;
+  if (pDays === null || pDays === undefined) {
+    pDays = d.closed_weekdays;
+  }
+  if (typeof pDays === "string") {
+    pDays = pDays.split(",");
+  }
+  if (!Array.isArray(pDays)) {
+    pDays = d.closed_weekdays;
+  }
+  d.perishable_closed_weekdays = [
+    ...new Set(
+      pDays
+        .map((v) => Number(String(v).trim()))
+        .filter((v) => Number.isInteger(v) && v >= 0 && v <= 6)
+    ),
+  ].sort((a, b) => a - b);
+
   d.blackout_dates = Array.isArray(d.blackout_dates) ? d.blackout_dates : [];
   d.sameday = normalizeSameday(d.sameday);
   d.booking = normalizeBooking(d.booking);
@@ -109,6 +155,21 @@ export function validateDelivery(d) {
   if (d.closed_weekdays.length >= 7) {
     errors["delivery.closed_weekdays"] =
       "Couriers cannot be closed every day. Leave at least one weekday open.";
+  }
+
+  // THE TWO LISTS ADD UP, so the check is on the union rather than on the
+  // perishable list alone. Three shop-wide closed days and four perishable
+  // ones are each individually fine and together mean no cake can ever be
+  // delivered -- which the calendar would render as sixty greyed-out squares
+  // and no explanation.
+  const perishableUnion = new Set([
+    ...d.closed_weekdays.map(Number),
+    ...d.perishable_closed_weekdays.map(Number),
+  ]);
+  if (perishableUnion.size >= 7) {
+    errors["delivery.perishable_closed_weekdays"] =
+      "Between them, these two lists close every day of the week, so a " +
+      "perishable item could never be delivered. Open a day.";
   }
 
   if (d.cutoff_enabled && timeToMinutes(d.cutoff_time) === null) {
@@ -235,6 +296,16 @@ export function summarizeDelivery(rawDelivery, todayStr = null, nowMinutes = nul
     text += `. The calendar runs ${d.horizon_days} days out.`;
     if (closedNames.length > 0) {
       text += ` No deliveries on ${closedNames.join(", ")}.`;
+    }
+
+    // Only the days perishables lose ON TOP of the shop-wide ones are worth
+    // saying. Repeating a day already named above reads as a contradiction.
+    const perishableOnly = d.perishable_closed_weekdays
+      .filter((i) => !d.closed_weekdays.includes(i))
+      .map((i) => WEEKDAY_INDEX_LABELS[i])
+      .filter(Boolean);
+    if (perishableOnly.length > 0) {
+      text += ` Perishable items also cannot arrive on ${perishableOnly.join(", ")}.`;
     }
     if (d.blackout_dates.length > 0) {
       text += ` ${d.blackout_dates.length} blocked ${

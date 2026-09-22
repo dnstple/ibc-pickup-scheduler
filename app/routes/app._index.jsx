@@ -736,6 +736,23 @@ function DeliveryTab({
     updateDelivery({ closed_weekdays: [...next].sort((a, b) => a - b) });
   };
 
+  /* THE PERISHABLE LIST, which ADDS TO the one above rather than replacing it.
+     `?? closed_weekdays` mirrors what normalizeDelivery does for a shop that
+     has never saved this key, so the boxes show the rule that is actually in
+     force rather than an empty row that would imply cakes were unrestricted. */
+  const perishableClosed = new Set(
+    (d.perishable_closed_weekdays ?? d.closed_weekdays ?? []).map(Number)
+  );
+
+  const togglePerishableWeekday = (index, open) => {
+    const next = new Set(perishableClosed);
+    if (open) next.delete(index);
+    else next.add(index);
+    updateDelivery({
+      perishable_closed_weekdays: [...next].sort((a, b) => a - b),
+    });
+  };
+
   /* THE EARLIEST DATE THESE RULES WOULD OFFER RIGHT NOW, from the same
      function the basket's rule mirrors, so what is shown is what a customer
      gets. nowMinutes is included because the cut-off is a time-of-day rule —
@@ -891,6 +908,45 @@ function DeliveryTab({
                 {errors["delivery.closed_weekdays"] && (
                   <Text as="p" tone="critical">
                     {errors["delivery.closed_weekdays"]}
+                  </Text>
+                )}
+              </BlockStack>
+
+              <Divider />
+
+              <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">
+                  Days a cake cannot arrive
+                </Text>
+                <Text as="p" tone="subdued">
+                  A cake is not limited by which days a courier runs. It is limited by
+                  how many nights it spends in transit, and a day is only one night
+                  away if you dispatch the day before. Untick a day here and it stays
+                  choosable for chocolate and disappears for anything marked
+                  perishable.
+                </Text>
+                <Text as="p" tone="subdued">
+                  This list is <Text as="span" fontWeight="semibold">added to</Text> the
+                  one above, so a day already closed there is closed for everything.
+                  A product counts as perishable when it carries the metafield{" "}
+                  <Text as="span" fontWeight="semibold">custom.ibc_perishable</Text> set
+                  to true.
+                </Text>
+                <InlineStack gap="400" wrap>
+                  {WEEKDAY_INDEX_LABELS.map((label, index) => (
+                    <Checkbox
+                      key={`perishable-${label}`}
+                      label={label}
+                      checked={!perishableClosed.has(index) && !closed.has(index)}
+                      onChange={(v) => togglePerishableWeekday(index, v)}
+                      disabled={d.enabled === false || closed.has(index)}
+                      helpText={closed.has(index) ? "Closed for everything" : undefined}
+                    />
+                  ))}
+                </InlineStack>
+                {errors["delivery.perishable_closed_weekdays"] && (
+                  <Text as="p" tone="critical">
+                    {errors["delivery.perishable_closed_weekdays"]}
                   </Text>
                 )}
               </BlockStack>
