@@ -15,6 +15,7 @@
 
 import { attributesToObject } from "./order-booking.js";
 import { zonedParts } from "./timezone.js";
+import { DEFAULT_TIER_SETTINGS } from "./tiers.js";
 
 /* ------------------------------------------------------------------ keys */
 
@@ -37,6 +38,7 @@ export const SAMEDAY_READ_KEYS = [
   "delivery_deadline",
   "delivery_ready_at",
   "delivery_price_pence",
+  "delivery_prep_minutes",
 ];
 
 /* The attributes THIS module writes. Prefixed `ibc_courier_` to sit beside
@@ -282,6 +284,13 @@ export function courierIntent(order) {
     tier: String(attributes.delivery_tier || "").trim() || null,
     deadline: String(attributes.delivery_deadline || "").trim() || null,
     readyAt: String(attributes.delivery_ready_at || "").trim() || null,
+    /* How long the basket needs, where the basket said. Null on older
+     * orders; tierPickupTime() falls back to the ordinary preparation. */
+    prepMinutes: (() => {
+      const raw = String(attributes.delivery_prep_minutes || "").trim();
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+    })(),
     /* ALREADY PENCE. toPence() turns pounds into pence and would have read
      * £11.95 out of "1195" as £1,195.00 — caught by a test that expected the
      * guard to refuse a £17.50 quote and watched it book instead. The name
@@ -521,6 +530,56 @@ export function pickupTime({ windowStart, settings, now = new Date() }) {
   return { iso: gophrInstant(at), reason: null };
 }
 
+/**
+ * When to ask for the rider on a TIER order.
+ *
+ * delivery_ready_at is stamped when the basket is QUOTED, not when it is
+ * paid. A customer who quotes, wanders off and pays forty minutes later
+ * arrives with a ready time in the past. That is not a missed window: a tier
+ * is a deadline, and the only question is whether the deadline can still be
+ * made. Order #1141 quoted "Any time before 9:00pm" at 6:11pm, paid at
+ * 7:05pm, and was flagged as "window passed" with two hours still to go.
+ *
+ * So a stale ready time is moved to now plus the basket's preparation, and
+ * the order is refused only when preparation and the journey no longer fit
+ * before the deadline — the same sum tiersFor() used to offer the tier.
+ */
+export function tierPickupTime({
+  readyAt,
+  deadline,
+  prepMinutes,
+  travelMinutes = DEFAULT_TIER_SETTINGS.travel_buffer_minutes,
+  now = new Date(),
+}) {
+  const ready = new Date(readyAt);
+  if (Number.isNaN(ready.getTime())) return { iso: null, reason: "bad_window_start" };
+
+  const nowMs = now.getTime();
+  /* Older baskets do not say how long they need; the ordinary basket's
+   * preparation is the honest guess. */
+  const prep = Number.isFinite(prepMinutes) && prepMinutes >= 0
+    ? prepMinutes
+    : DEFAULT_TIER_SETTINGS.prep_minutes;
+  const stale = ready.getTime() < nowMs;
+  const at = stale ? nowMs + prep * 60000 : ready.getTime();
+
+  /* Only a STALE quote is re-judged. A fresh one was offered by tiersFor()
+   * moments ago, and a nonsense deadline on it is deadlineFor()'s to drop. */
+  const end = stale && deadline ? new Date(deadline) : null;
+  if (end && !Number.isNaN(end.getTime()) && at + travelMinutes * 60000 > end.getTime()) {
+    return { iso: null, reason: "too_late_for_deadline" };
+  }
+
+  return { iso: gophrInstant(new Date(at)), reason: null, stale };
+}
+
+/** 19:05 in London -> "7:05pm", for notes the shop reads. */
+function clockLabel(instant) {
+  const { hour, minute } = zonedParts(instant, TZ);
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${String(minute).padStart(2, "0")}${hour >= 12 ? "pm" : "am"}`;
+}
+
 /* ------------------------------------------------------------------ deadline */
 
 /* The shop's clock. "Same day" is a question about London, not about UTC, and
@@ -710,12 +769,19 @@ export function courierPlan({ order, booking, quote = null, now = new Date() }) 
    * was placed under. */
   const readyAt = intent.readyAt || null;
   const when = readyAt
-    ? pickupTime({ windowStart: readyAt, settings: { ...b, pickup_offset_minutes: 0 }, now })
+    ? tierPickupTime({
+      readyAt,
+      deadline: intent.deadline || intent.windowEnd,
+      prepMinutes: intent.prepMinutes,
+      now,
+    })
     : pickupTime({ windowStart: intent.windowStart, settings: b, now });
   if (!when.iso) {
     const why = when.reason === "window_passed"
       ? `The ${intent.label} window had already passed when this order was paid.`
-      : "This order's delivery window could not be read as a time.";
+      : when.reason === "too_late_for_deadline"
+        ? `This order was paid at ${clockLabel(now)}, too late for a rider to make "${intent.label}".`
+        : "This order's delivery window could not be read as a time.";
     return {
       act: "flag",
       reason: when.reason,

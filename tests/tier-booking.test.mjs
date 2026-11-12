@@ -158,3 +158,55 @@ test("a collection order carrying a stale same-day tier is still ignored", () =>
   assert.equal(plan.act, "ignore");
   assert.equal(plan.reason, "not_delivery");
 });
+
+/* ORDER #1141, AS IT HAPPENED. Quoted at 6:11pm (ready 6:26pm), paid at
+ * 7:05pm for "Any time before 9:00pm". It was flagged "window passed" with
+ * two hours to spare. A stale ready time is a quote that sat in a basket,
+ * not a missed delivery: the rider is asked for at payment plus preparation. */
+const ORDER_1141 = {
+  delivery_method: "delivery",
+  delivery_option: "sameday",
+  delivery_date: "2026-11-11",
+  delivery_label: "Any time before 9:00pm",
+  delivery_window_start: "2026-11-11T18:26:52+00:00",
+  delivery_window_end: "2026-11-11T21:00:00+00:00",
+  delivery_tier: "anytime",
+  delivery_deadline: "2026-11-11T21:00:00+00:00",
+  delivery_ready_at: "2026-11-11T18:26:52+00:00",
+  delivery_price_pence: "1595",
+};
+
+test("#1141: a ready time left stale in the basket still books a rider", () => {
+  const plan = courierPlan({
+    order: orderWith(ORDER_1141),
+    booking: { ...DEFAULT_BOOKING, auto_book: true },
+    now: new Date("2026-11-11T19:05:55Z"),
+  });
+  assert.equal(plan.act, "quote");
+  /* 7:05:55pm plus the ordinary fifteen minutes' preparation. */
+  assert.equal(plan.pickupIso, "2026-11-11T19:20:55+00:00");
+  assert.equal(plan.deadlineIso, "2026-11-11T21:00:00+00:00");
+});
+
+test("a stale ready time uses the basket's own preparation when it says", () => {
+  const plan = courierPlan({
+    order: orderWith({ ...ORDER_1141, delivery_prep_minutes: "75" }),
+    booking: DEFAULT_BOOKING,
+    now: new Date("2026-11-11T19:05:00Z"),
+  });
+  assert.equal(plan.act, "quote");
+  assert.equal(plan.pickupIso, "2026-11-11T20:20:00+00:00");
+});
+
+test("a tier that can no longer be made is flagged, with the time it was paid", () => {
+  const plan = courierPlan({
+    order: orderWith(ORDER_1141),
+    booking: { ...DEFAULT_BOOKING, auto_book: true },
+    /* 8:10pm: fifteen minutes' prep and forty on the road ends at 9:05pm. */
+    now: new Date("2026-11-11T20:10:00Z"),
+  });
+  assert.equal(plan.act, "flag");
+  assert.equal(plan.reason, "too_late_for_deadline");
+  assert.match(plan.attributes.ibc_courier_note, /paid at 8:10pm/);
+  assert.match(plan.attributes.ibc_courier_note, /Any time before 9:00pm/);
+});
