@@ -390,8 +390,63 @@ export function normalizeMobile(raw) {
   /* 07873989675 -> +447873989675. Eleven digits starting 07 is the only
    * pattern this converts, because it is the only one it can be sure of. */
   if (digits.startsWith("0") && digits.length === 11) return `+44${digits.slice(1)}`;
+  /* 7985965716: a UK mobile typed without its leading 0, as on #1141.
+   * Ten digits starting 7 is a UK mobile and nothing else. */
+  if (digits.startsWith("7") && digits.length === 10) return `+44${digits}`;
 
   return trimmed;
+}
+
+/**
+ * The number the rider is given, and anything the rider should read instead.
+ *
+ * #1150 paid with a US number (+1 339…) and Gophr refused the job with a 422
+ * on every attempt. A number that is not a UK one is therefore swapped for
+ * the shop's, and the customer's own number goes into the dropoff note, where
+ * the rider can still read it. A UK number, or no number at all, goes through
+ * untouched — as does everything when the shop has no number set.
+ */
+export function riderPhone({ mobile, shopMobile }) {
+  const m = normalizeMobile(mobile);
+  const shop = normalizeMobile(shopMobile);
+  if (!m || m.startsWith("+44") || !shop) return { mobile: m, note: null };
+  return { mobile: shop, note: `Customer's phone: ${m}` };
+}
+
+/**
+ * Gophr's own reason for refusing, in one readable line.
+ *
+ * "Gophr returned 422." is the status and nothing else, and on #1150 it was
+ * the only record left once the logs rolled over. The body says which field
+ * it objected to, so the body is what goes on the order.
+ */
+export function gophrReason(body, max = 300) {
+  if (body === null || body === undefined || body === "") return "";
+  const parts = [];
+  const visit = (node) => {
+    if (node === null || node === undefined) return;
+    if (typeof node === "string") { if (node.trim()) parts.push(node.trim()); return; }
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (typeof node === "object") {
+      const field = node.object || node.field || node.property || null;
+      const msg = node.message || node.detail || node.error_message || node.title || null;
+      if (msg && typeof msg === "string") {
+        parts.push(field ? `${field}: ${msg}` : msg);
+        return;
+      }
+      ["errors", "error", "data", "raw"].forEach((k) => { if (k in node) visit(node[k]); });
+    }
+  };
+  visit(body);
+  const text = parts.length ? [...new Set(parts)].join("; ") : JSON.stringify(body);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** The sentence put on an order whose booking attempt broke. */
+export function failureNote(error) {
+  const base = String(error?.message || "unknown error").replace(/\.+$/, "");
+  const why = gophrReason(error?.body);
+  return `The courier booking failed: ${base}${why ? ` (${why})` : ""}. Book by hand and contact the customer.`;
 }
 
 /* ------------------------------------------------------------------ money */
@@ -694,7 +749,15 @@ export function failedAttributes({ note, now = new Date() }) {
  * with a blip, and then stopped by returning 200 with the order flagged. The
  * shop sees it and rings the customer, which is what should happen anyway.
  */
-export function retryVerdict({ paidAt, now = new Date(), maxRetryMinutes = 20 }) {
+export function retryVerdict({ paidAt, now = new Date(), maxRetryMinutes = 20, status = null }) {
+  /* A REFUSAL IS NOT A BLIP. A 4xx is Gophr reading the request and saying
+   * no; sending the same request again gets the same no. #1150 was refused
+   * six times over thirty minutes before anyone was told. Flag it at once.
+   * 408 and 429 are the two 4xx that do mean "try again later". */
+  const s = Number(status);
+  if (status !== null && Number.isFinite(s) && s >= 400 && s < 500 && s !== 408 && s !== 429) {
+    return { retry: false, reason: "rejected" };
+  }
   const paid = paidAt ? new Date(paidAt) : null;
   if (!paid || Number.isNaN(paid.getTime())) {
     /* No timestamp to reason from. One attempt, then flagged — better than a

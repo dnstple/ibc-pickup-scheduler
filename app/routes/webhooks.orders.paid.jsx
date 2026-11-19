@@ -33,8 +33,10 @@ import {
   normalizeBooking,
   normalizeMobile,
   packedGrams,
+  riderPhone,
+  failureNote,
 } from "../lib/courier-booking.js";
-import { bookJob, parcelFor, GophrError } from "../lib/gophr.server.js";
+import { bookJob, parcelFor, GophrError, pickupMobile } from "../lib/gophr.server.js";
 import { fulfilWithTracking } from "../lib/fulfilment.server.js";
 
 /* Everything the decision needs, and nothing else. `customAttributes` is read
@@ -336,6 +338,10 @@ export const action = async ({ request }) => {
      * half-understood call on the unhappy path. */
     const destination = destinationFrom(order);
     const zone = zoneForPostcode(destination.postcode, sameday.zones);
+    /* A number Gophr cannot dial is a booking Gophr will not take (#1150).
+     * The shop's number goes to the rider; the customer's goes in the note. */
+    const phone = riderPhone({ mobile: destination.mobile, shopMobile: pickupMobile() });
+    destination.mobile = phone.mobile;
 
     let verdictForLog = null;
 
@@ -364,6 +370,7 @@ export const action = async ({ request }) => {
          * changes what the rider does. */
         dropoffNotes: [
           deliveryExtras(order).instructions,
+          phone.note,
           first.intent?.label ? `Delivery window: ${first.intent.label}` : "",
         ].filter(Boolean).join(" — ") || undefined,
         /* AND SOMETHING FOR THE COLLECTION END. Riders were previously sent to
@@ -502,7 +509,11 @@ export const action = async ({ request }) => {
 
     /* A transient failure is worth one more go, for a few minutes. After that
      * the window is gone and a retry is a rider nobody wants. */
-    const verdict = retryVerdict({ paidAt: payload?.processed_at || payload?.created_at });
+    const verdict = retryVerdict({
+      paidAt: payload?.processed_at || payload?.created_at,
+      status: isGophr ? error.status ?? null : null,
+    });
+    if (!verdict.retry) log(gid, "not retrying:", verdict.reason);
 
     if (verdict.retry) {
       log(gid, "asking Shopify to retry;", Math.round(verdict.minutes), "minutes old");
@@ -546,7 +557,7 @@ export const action = async ({ request }) => {
           admin,
           data.order,
           failedAttributes({
-            note: `The courier booking failed: ${error?.message || "unknown error"}. Book by hand and contact the customer.`,
+            note: failureNote(error),
           }),
           ["same-day", "courier-review"]
         );
