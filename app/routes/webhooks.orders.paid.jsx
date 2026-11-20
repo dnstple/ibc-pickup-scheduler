@@ -35,8 +35,10 @@ import {
   packedGrams,
   riderPhone,
   failureNote,
+  gophrReason,
+  isPhoneRefusal,
 } from "../lib/courier-booking.js";
-import { bookJob, parcelFor, GophrError, pickupMobile } from "../lib/gophr.server.js";
+import { bookJob, parcelFor, GophrError, fallbackMobile } from "../lib/gophr.server.js";
 import { fulfilWithTracking } from "../lib/fulfilment.server.js";
 
 /* Everything the decision needs, and nothing else. `customAttributes` is read
@@ -340,14 +342,15 @@ export const action = async ({ request }) => {
     const zone = zoneForPostcode(destination.postcode, sameday.zones);
     /* A number Gophr cannot dial is a booking Gophr will not take (#1150).
      * The shop's number goes to the rider; the customer's goes in the note. */
-    const phone = riderPhone({ mobile: destination.mobile, shopMobile: pickupMobile() });
+    const fallback = normalizeMobile(fallbackMobile());
+    const phone = riderPhone({ mobile: destination.mobile, shopMobile: fallback });
     destination.mobile = phone.mobile;
 
     let verdictForLog = null;
 
-    const result = await bookJob(
+    const attempt = (dest, phoneNote) => bookJob(
       {
-        destination,
+        destination: dest,
         parcel: parcelFrom(order, booking),
         earliestPickup: first.pickupIso,
         /* The end of the window the customer chose. Costs nothing at the
@@ -370,7 +373,7 @@ export const action = async ({ request }) => {
          * changes what the rider does. */
         dropoffNotes: [
           deliveryExtras(order).instructions,
-          phone.note,
+          phoneNote,
           first.intent?.label ? `Delivery window: ${first.intent.label}` : "",
         ].filter(Boolean).join(" — ") || undefined,
         /* AND SOMETHING FOR THE COLLECTION END. Riders were previously sent to
@@ -395,6 +398,30 @@ export const action = async ({ request }) => {
         },
       }
     );
+
+    /* ONE MORE GO WITH THE FALLBACK NUMBER.
+     *
+     * A number can look British and still be refused — a landline, a digit
+     * short. A 422 is a refusal before any job exists, so nothing is booked
+     * yet and a second attempt cannot send a second rider. The fallback goes
+     * to the rider; the customer's number goes in the note. */
+    let result;
+    try {
+      result = await attempt(destination, phone.note);
+    } catch (error) {
+      const retryable =
+        error instanceof GophrError &&
+        isPhoneRefusal(error) &&
+        fallback &&
+        destination.mobile !== fallback;
+      if (!retryable) throw error;
+      log(order.name, "phone refused by Gophr; retrying with the fallback number:", gophrReason(error.body));
+      const customer = destination.mobile;
+      result = await attempt(
+        { ...destination, mobile: fallback },
+        customer ? `Customer's phone: ${customer}` : null
+      );
+    }
 
     /* The draft was made and then not confirmed — too dear, or automatic
      * booking is off. Either way a human decides now. */

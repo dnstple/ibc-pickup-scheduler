@@ -8,6 +8,7 @@ import {
   gophrReason,
   failureNote,
   retryVerdict,
+  isPhoneRefusal,
 } from "../app/lib/courier-booking.js";
 
 const SHOP = "07700 900123";
@@ -82,4 +83,18 @@ test("the note carries the reason and no double full stop", () => {
     failureNote({ message: "Gophr returned 422." }),
     "The courier booking failed: Gophr returned 422. Book by hand and contact the customer."
   );
+});
+
+test("a 422 about the dropoff number is a phone refusal", () => {
+  const body = { errors: [{ object: "dropoff_mobile_number", message: "Invalid mobile number" }] };
+  assert.equal(isPhoneRefusal({ status: 422, body }), true);
+  assert.equal(isPhoneRefusal({ status: 422, body: { message: "The phone number is not valid" } }), true);
+});
+
+test("other refusals, other statuses and pickup-only complaints are not", () => {
+  const phoneBody = { errors: [{ object: "dropoff_mobile_number", message: "Invalid" }] };
+  assert.equal(isPhoneRefusal({ status: 500, body: phoneBody }), false);
+  assert.equal(isPhoneRefusal({ status: 422, body: { errors: [{ object: "dropoff_postcode", message: "Invalid" }] } }), false);
+  assert.equal(isPhoneRefusal({ status: 422, body: { errors: [{ object: "pickup_mobile_number", message: "Invalid" }] } }), false);
+  assert.equal(isPhoneRefusal({ status: 422 }), false);
 });

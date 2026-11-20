@@ -449,6 +449,21 @@ export function failureNote(error) {
   return `The courier booking failed: ${base}${why ? ` (${why})` : ""}. Book by hand and contact the customer.`;
 }
 
+/**
+ * Did Gophr refuse the job because of the dropoff phone number?
+ *
+ * Only a 422 counts — a request read and refused, so no job exists and a
+ * second attempt cannot book a second rider. The pickup number is the shop's
+ * own and swapping the customer's would not help, so a complaint naming only
+ * the pickup end does not count either.
+ */
+export function isPhoneRefusal(error) {
+  if (Number(error?.status) !== 422) return false;
+  const why = gophrReason(error?.body);
+  if (!/mobile|phone/i.test(why)) return false;
+  return !/pickup_mobile|pickup_phone/i.test(why) || /dropoff_mobile|dropoff_phone/i.test(why);
+}
+
 /* ------------------------------------------------------------------ money */
 
 /** "12.95" | 12.95 | "£12.95" -> 1295, or null. */

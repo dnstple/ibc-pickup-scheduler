@@ -410,6 +410,15 @@ export function pickupMobile() {
 }
 
 /**
+ * The UK number a rider is given when the customer's cannot be used — a
+ * foreign number, or one Gophr refused. Its own setting, so the collection
+ * number above stays the shop's. Falls back to that number when unset.
+ */
+export function fallbackMobile() {
+  return (process.env.GOPHR_FALLBACK_MOBILE || "").trim() || pickupMobile();
+}
+
+/**
  * Build the job request.
  *
  * `externalId` is the order — it is what ties a Gophr status webhook back to
